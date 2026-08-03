@@ -429,6 +429,21 @@
     });
   }
 
+  function toggleTopicSelection(topicId) {
+    if (!topicId) return;
+    if (selectedTopicIds.includes(topicId)) {
+      selectedTopicIds = selectedTopicIds.filter((x) => x !== topicId);
+    } else {
+      selectedTopicIds = selectedTopicIds.concat(topicId);
+    }
+    dirty = true;
+    setStatus("未保存…");
+    renderTopicChips();
+    if (activeDate) persistCurrent(true);
+    const t = findTopic(topicId);
+    if (t && selectedTopicIds.includes(topicId)) toast("已挂上「" + t.name + "」");
+  }
+
   function renderTopicChips() {
     const box = $("#topicChips");
     if (!box) return;
@@ -443,24 +458,29 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.className = "topic-chip" + (on ? " is-on" : "");
+      btn.dataset.topicId = t.id;
       btn.textContent = t.name;
       btn.setAttribute("aria-pressed", on ? "true" : "false");
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        if (selectedTopicIds.includes(t.id)) {
-          selectedTopicIds = selectedTopicIds.filter((x) => x !== t.id);
-        } else {
-          selectedTopicIds = selectedTopicIds.concat(t.id);
-        }
-        dirty = true;
-        setStatus("未保存…");
-        renderTopicChips();
-        // 立刻落盘，选中即有反馈
-        if (activeDate) persistCurrent(true);
-      });
       box.appendChild(btn);
     });
+  }
+
+  function bindTopicChipsOnce() {
+    const box = $("#topicChips");
+    if (!box || box.dataset.bound === "1") return;
+    box.dataset.bound = "1";
+    // 事件委托：避免手机端重建 DOM 时点选“没反应”
+    box.addEventListener(
+      "pointerup",
+      (e) => {
+        const btn = e.target.closest(".topic-chip");
+        if (!btn || !box.contains(btn)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        toggleTopicSelection(btn.dataset.topicId);
+      },
+      { passive: false }
+    );
   }
 
   /* —— Editor —— */
@@ -984,6 +1004,7 @@ h2{font-size:14pt;margin:0.4em 0}
 
   /* —— Bindings —— */
   function bind() {
+    bindTopicChipsOnce();
     $("#prevMonth").addEventListener("click", () => shiftMonth(-1));
     $("#nextMonth").addEventListener("click", () => shiftMonth(1));
     $("#goToday").addEventListener("click", () => {
