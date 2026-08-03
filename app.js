@@ -442,10 +442,12 @@
       const on = selectedTopicIds.includes(t.id);
       const btn = document.createElement("button");
       btn.type = "button";
-      btn.className = "chip" + (on ? " is-on" : "");
+      btn.className = "topic-chip" + (on ? " is-on" : "");
       btn.textContent = t.name;
       btn.setAttribute("aria-pressed", on ? "true" : "false");
-      btn.addEventListener("click", () => {
+      btn.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         if (selectedTopicIds.includes(t.id)) {
           selectedTopicIds = selectedTopicIds.filter((x) => x !== t.id);
         } else {
@@ -453,8 +455,9 @@
         }
         dirty = true;
         setStatus("未保存…");
-        scheduleAutosave();
         renderTopicChips();
+        // 立刻落盘，选中即有反馈
+        if (activeDate) persistCurrent(true);
       });
       box.appendChild(btn);
     });
