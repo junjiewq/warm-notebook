@@ -1,61 +1,32 @@
 /**
- * 暖色手账 — calendar + markdown journal
- * Notes keyed in localStorage by YYYY-MM-DD
+ * 暖色手账 — 日历打卡 + 可自定义学习线（多主题）
+ * localStorage: { version:2, topics:[], notes:{ date: {title,body,topicIds,updatedAt} } }
  */
 (function () {
   "use strict";
 
-  const STORAGE_KEY = "warm-notebook:v1";
+  const STORAGE_KEY = "warm-notebook:v2";
+  const LEGACY_KEY = "warm-notebook:v1";
+  const SEED_TOPICS = ["PolarDB", "Java", "英语"];
   const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
   const WEEKDAYS_FULL = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
+  const TEMPLATE_MD =
+    "## 今日目标\n- \n\n## 学到了\n- \n\n## 疑问 & 明天\n- \n";
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 
-  let viewYear, viewMonth; // month 0-11
+  let viewYear, viewMonth;
   let activeDate = null;
+  let activeTopicId = null;
+  let selectedTopicIds = [];
+  let viewMode = "calendar"; // calendar | topics | topic-detail
   let easyMDE = null;
   let autosaveTimer = null;
   let dirty = false;
 
-  /* —— Storage —— */
-  function loadAll() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      return raw ? JSON.parse(raw) : {};
-    } catch {
-      return {};
-    }
-  }
-
-  function saveAll(data) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-  }
-
-  function getNote(dateKey) {
-    const all = loadAll();
-    return all[dateKey] || { title: "", body: "" };
-  }
-
-  function setNote(dateKey, note) {
-    const all = loadAll();
-    const title = (note.title || "").trim();
-    const body = (note.body || "").trim();
-    if (!title && !body) {
-      delete all[dateKey];
-    } else {
-      all[dateKey] = {
-        title,
-        body,
-        updatedAt: new Date().toISOString(),
-      };
-    }
-    saveAll(all);
-  }
-
-  function hasNote(dateKey) {
-    const n = loadAll()[dateKey];
-    return !!(n && ((n.title && n.title.trim()) || (n.body && n.body.trim())));
+  function uid() {
+    return "t_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
   }
 
   function pad(n) {
@@ -81,6 +52,184 @@
     return `${y}年${m + 1}月${d}日`;
   }
 
+  function escapeHtml(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+  }
+
+  /* —— Storage (v2 + migrate v1) —— */
+  function emptyStore() {
+    return {
+      version: 2,
+      topics: SEED_TOPICS.map((name) => ({
+        id: uid(),
+        name,
+        createdAt: new Date().toISOString(),
+      })),
+      notes: {},
+    };
+  }
+
+  function migrateLegacy(raw) {
+    const store = emptyStore();
+    if (!raw || typeof raw !== "object") return store;
+    Object.keys(raw).forEach((k) => {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(k)) return;
+      const n = raw[k] || {};
+      store.notes[k] = {
+        title: (n.title || "").trim(),
+        body: (n.body || "").trim(),
+        topicIds: Array.isArray(n.topicIds) ? n.topicIds.slice() : [],
+        updatedAt: n.updatedAt || new Date().toISOString(),
+      };
+    });
+    return store;
+  }
+
+  function loadStore() {
+    try {
+      const v2 = localStorage.getItem(STORAGE_KEY);
+      if (v2) {
+        const data = JSON.parse(v2);
+        if (data && data.version === 2 && data.notes) {
+          if (!Array.isArray(data.topics)) data.topics = [];
+          return data;
+        }
+      }
+      const v1 = localStorage.getItem(LEGACY_KEY);
+      if (v1) {
+        const migrated = migrateLegacy(JSON.parse(v1));
+        saveStore(migrated);
+        return migrated;
+      }
+    } catch {
+      /* fall through */
+    }
+    const fresh = emptyStore();
+    saveStore(fresh);
+    return fresh;
+  }
+
+  function saveStore(data) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+  }
+
+  function getTopics() {
+    return loadStore().topics.slice();
+  }
+
+  function findTopic(id) {
+    return getTopics().find((t) => t.id === id) || null;
+  }
+
+  function addTopic(name) {
+    const n = (name || "").trim();
+    if (!n) return null;
+    const store = loadStore();
+    if (store.topics.some((t) => t.name === n)) {
+      toast("主题已存在");
+      return store.topics.find((t) => t.name === n);
+    }
+    const topic = { id: uid(), name: n, createdAt: new Date().toISOString() };
+    store.topics.push(topic);
+    saveStore(store);
+    return topic;
+  }
+
+  function renameTopic(id, name) {
+    const n = (name || "").trim();
+    if (!n) return false;
+    const store = loadStore();
+    const t = store.topics.find((x) => x.id === id);
+    if (!t) return false;
+    t.name = n;
+    saveStore(store);
+    return true;
+  }
+
+  function deleteTopic(id) {
+    const store = loadStore();
+    store.topics = store.topics.filter((t) => t.id !== id);
+    Object.keys(store.notes).forEach((date) => {
+      const note = store.notes[date];
+      if (note && Array.isArray(note.topicIds)) {
+        note.topicIds = note.topicIds.filter((x) => x !== id);
+      }
+    });
+    saveStore(store);
+  }
+
+  function getNote(dateKey) {
+    const n = loadStore().notes[dateKey];
+    return n
+      ? {
+          title: n.title || "",
+          body: n.body || "",
+          topicIds: Array.isArray(n.topicIds) ? n.topicIds.slice() : [],
+          updatedAt: n.updatedAt || null,
+        }
+      : { title: "", body: "", topicIds: [], updatedAt: null };
+  }
+
+  function setNote(dateKey, note) {
+    const store = loadStore();
+    const title = (note.title || "").trim();
+    const body = (note.body || "").trim();
+    const topicIds = Array.isArray(note.topicIds) ? note.topicIds.filter(Boolean) : [];
+    if (!title && !body) {
+      delete store.notes[dateKey];
+    } else {
+      store.notes[dateKey] = {
+        title,
+        body,
+        topicIds,
+        updatedAt: new Date().toISOString(),
+      };
+    }
+    saveStore(store);
+  }
+
+  function hasNote(dateKey) {
+    const n = loadStore().notes[dateKey];
+    return !!(n && ((n.title && n.title.trim()) || (n.body && n.body.trim())));
+  }
+
+  function countNotesForTopic(topicId) {
+    const notes = loadStore().notes;
+    return Object.keys(notes).filter((d) => {
+      const n = notes[d];
+      return n && Array.isArray(n.topicIds) && n.topicIds.includes(topicId) && hasNote(d);
+    }).length;
+  }
+
+  function getEntriesForTopic(topicId, ascending) {
+    const notes = loadStore().notes;
+    const keys = Object.keys(notes)
+      .filter((d) => {
+        const n = notes[d];
+        return n && Array.isArray(n.topicIds) && n.topicIds.includes(topicId);
+      })
+      .sort();
+    if (ascending === false) keys.reverse();
+    return keys
+      .map((date) => {
+        const n = notes[date] || {};
+        const title = (n.title || "").trim();
+        const content = (n.body || "").trim();
+        if (!title && !content) return null;
+        return {
+          date,
+          title,
+          content: content || "（空）",
+          topicIds: n.topicIds || [],
+          updatedAt: n.updatedAt || null,
+        };
+      })
+      .filter(Boolean);
+  }
+
   /* —— Toast —— */
   let toastTimer;
   function toast(msg) {
@@ -97,10 +246,34 @@
     }, 2200);
   }
 
+  /* —— View mode —— */
+  function setMode(mode) {
+    viewMode = mode;
+    const cal = $("#panelCalendar");
+    const topics = $("#panelTopics");
+    const detail = $("#panelTopicDetail");
+    const exportBar = $("#mainExportBar");
+    const tabCal = $("#tabCalendar");
+    const tabTop = $("#tabTopics");
+
+    cal.hidden = mode !== "calendar";
+    topics.hidden = mode !== "topics";
+    detail.hidden = mode !== "topic-detail";
+    if (exportBar) exportBar.hidden = mode === "topic-detail";
+
+    tabCal.classList.toggle("is-active", mode === "calendar");
+    tabTop.classList.toggle("is-active", mode === "topics" || mode === "topic-detail");
+    tabCal.setAttribute("aria-selected", mode === "calendar" ? "true" : "false");
+    tabTop.setAttribute("aria-selected", mode !== "calendar" ? "true" : "false");
+
+    if (mode === "calendar") renderCalendar(false);
+    if (mode === "topics") renderTopicList();
+    if (mode === "topic-detail") renderTopicDetail();
+  }
+
   /* —— Calendar —— */
   function initWeekdays() {
-    const row = $("#weekdayRow");
-    row.innerHTML = WEEKDAYS.map((w) => `<span>${w}</span>`).join("");
+    $("#weekdayRow").innerHTML = WEEKDAYS.map((w) => `<span>${w}</span>`).join("");
   }
 
   function renderCalendar(animate) {
@@ -150,7 +323,6 @@
   }
 
   function dayButton(y, m, d, other) {
-    // normalize overflow months
     const dt = new Date(y, m, d);
     const key = toKey(dt.getFullYear(), dt.getMonth(), dt.getDate());
     const btn = document.createElement("button");
@@ -172,6 +344,104 @@
       viewYear++;
     }
     renderCalendar(true);
+  }
+
+  /* —— Topics UI —— */
+  function promptNewTopic() {
+    const name = window.prompt("新建学习线主题名称（任意科目）", "");
+    if (name === null) return null;
+    const t = addTopic(name);
+    if (t) {
+      toast("已添加「" + t.name + "」");
+      renderTopicList();
+      renderTopicChips();
+    }
+    return t;
+  }
+
+  function renderTopicList() {
+    const list = $("#topicList");
+    const empty = $("#topicsEmpty");
+    const topics = getTopics();
+    list.innerHTML = "";
+    empty.hidden = topics.length > 0;
+    topics.forEach((t) => {
+      const count = countNotesForTopic(t.id);
+      const li = document.createElement("li");
+      li.className = "topic-item";
+      li.innerHTML = `
+        <button type="button" class="topic-item-btn" data-topic-id="${escapeHtml(t.id)}">
+          <span class="topic-item-name">${escapeHtml(t.name)}</span>
+          <span class="topic-item-meta">${count} 篇</span>
+        </button>`;
+      li.querySelector("button").addEventListener("click", () => {
+        activeTopicId = t.id;
+        setMode("topic-detail");
+      });
+      list.appendChild(li);
+    });
+  }
+
+  function renderTopicDetail() {
+    const topic = findTopic(activeTopicId);
+    if (!topic) {
+      setMode("topics");
+      return;
+    }
+    $("#topicDetailName").textContent = topic.name;
+    const entries = getEntriesForTopic(activeTopicId, true);
+    $("#topicDetailMeta").textContent = entries.length
+      ? `共 ${entries.length} 篇 · 按时间排列`
+      : "暂无挂到此主题的笔记";
+
+    const ul = $("#topicNotes");
+    const empty = $("#topicNotesEmpty");
+    ul.innerHTML = "";
+    empty.hidden = entries.length > 0;
+    entries.forEach((e) => {
+      const li = document.createElement("li");
+      li.className = "topic-note-card";
+      const preview = (e.content || "").replace(/\s+/g, " ").slice(0, 80);
+      li.innerHTML = `
+        <button type="button" class="topic-note-btn" data-date="${escapeHtml(e.date)}">
+          <span class="topic-note-date">${escapeHtml(formatDisplay(e.date))}</span>
+          <span class="topic-note-title">${escapeHtml(e.title || "（无标题）")}</span>
+          <span class="topic-note-preview">${escapeHtml(preview)}${preview.length >= 80 ? "…" : ""}</span>
+        </button>`;
+      li.querySelector("button").addEventListener("click", () => openEditor(e.date));
+      ul.appendChild(li);
+    });
+  }
+
+  function renderTopicChips() {
+    const box = $("#topicChips");
+    if (!box) return;
+    const topics = getTopics();
+    box.innerHTML = "";
+    if (!topics.length) {
+      box.innerHTML = '<p class="chips-empty">还没有主题，点「新主题」添加</p>';
+      return;
+    }
+    topics.forEach((t) => {
+      const on = selectedTopicIds.includes(t.id);
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "chip" + (on ? " is-on" : "");
+      btn.textContent = t.name;
+      btn.setAttribute("aria-pressed", on ? "true" : "false");
+      btn.addEventListener("click", () => {
+        if (selectedTopicIds.includes(t.id)) {
+          selectedTopicIds = selectedTopicIds.filter((x) => x !== t.id);
+        } else {
+          selectedTopicIds = selectedTopicIds.concat(t.id);
+        }
+        dirty = true;
+        setStatus("未保存…");
+        scheduleAutosave();
+        renderTopicChips();
+      });
+      box.appendChild(btn);
+    });
   }
 
   /* —— Editor —— */
@@ -201,9 +471,7 @@
         "|",
         "guide",
       ],
-      renderingConfig: {
-        singleLineBreaks: false,
-      },
+      renderingConfig: { singleLineBreaks: false },
     });
 
     easyMDE.codemirror.on("change", () => {
@@ -226,13 +494,17 @@
 
   function persistCurrent(silent) {
     if (!activeDate || !easyMDE) return;
-    const title = $("#noteTitle").value;
-    const body = easyMDE.value();
-    setNote(activeDate, { title, body });
+    setNote(activeDate, {
+      title: $("#noteTitle").value,
+      body: easyMDE.value(),
+      topicIds: selectedTopicIds.slice(),
+    });
     dirty = false;
     setStatus("已自动保存 · " + timeHM());
     if (!silent) toast("已保存");
     renderCalendar(false);
+    if (viewMode === "topics") renderTopicList();
+    if (viewMode === "topic-detail") renderTopicDetail();
   }
 
   function timeHM() {
@@ -243,6 +515,7 @@
   function openEditor(dateKey) {
     activeDate = dateKey;
     const note = getNote(dateKey);
+    selectedTopicIds = note.topicIds.slice();
     const { y, m, d } = parseKey(dateKey);
     const wd = new Date(y, m, d).getDay();
 
@@ -252,6 +525,7 @@
     easyMDE.value(note.body || "");
     dirty = false;
     setStatus(hasNote(dateKey) ? "已加载" : "新的一天");
+    renderTopicChips();
 
     const overlay = $("#overlay");
     const sheet = $("#editorSheet");
@@ -280,6 +554,9 @@
       overlay.hidden = true;
       sheet.hidden = true;
       activeDate = null;
+      selectedTopicIds = [];
+      if (viewMode === "topic-detail") renderTopicDetail();
+      if (viewMode === "topics") renderTopicList();
     }, 400);
   }
 
@@ -301,30 +578,18 @@
   }
 
   function mdToHtml(md) {
-    if (window.marked) {
-      return marked.parse(md || "", { breaks: true });
-    }
-    if (easyMDE && typeof easyMDE.markdown === "function") {
-      return easyMDE.markdown(md || "");
-    }
+    if (window.marked) return marked.parse(md || "", { breaks: true });
+    if (easyMDE && typeof easyMDE.markdown === "function") return easyMDE.markdown(md || "");
     return `<pre>${escapeHtml(md || "")}</pre>`;
   }
 
-  function escapeHtml(s) {
-    return String(s)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;");
-  }
-
-  /** Sorted note entries: [{ date, title, content, updatedAt? }] */
   function getSortedNotes(ascending) {
-    const all = loadAll();
-    const keys = Object.keys(all).sort();
+    const notes = loadStore().notes;
+    const keys = Object.keys(notes).sort();
     if (ascending === false) keys.reverse();
     return keys
       .map((date) => {
-        const n = all[date] || {};
+        const n = notes[date] || {};
         const title = (n.title || "").trim();
         const content = (n.body || "").trim();
         if (!title && !content) return null;
@@ -332,6 +597,7 @@
           date,
           title,
           content: content || "（空）",
+          topicIds: n.topicIds || [],
           updatedAt: n.updatedAt || null,
         };
       })
@@ -348,6 +614,7 @@
       date: dateKey,
       title,
       content: content || "（空）",
+      topicIds: note.topicIds || [],
       updatedAt: note.updatedAt || null,
     };
   }
@@ -360,9 +627,16 @@
     window.alert("暂无笔记");
   }
 
+  function topicNamesForEntry(entry) {
+    const map = Object.fromEntries(getTopics().map((t) => [t.id, t.name]));
+    return (entry.topicIds || []).map((id) => map[id]).filter(Boolean);
+  }
+
   function noteBlockMarkdown(entry) {
     const lines = [`## ${entry.date}`];
     if (entry.title) lines.push("", `### ${entry.title}`);
+    const tags = topicNamesForEntry(entry);
+    if (tags.length) lines.push("", `> 学习线：${tags.join(" · ")}`);
     lines.push("", entry.content || "（空）", "");
     return lines.join("\n");
   }
@@ -380,6 +654,10 @@
     const heading = entry.title
       ? `${escapeHtml(entry.date)} ${escapeHtml(entry.title)}`
       : escapeHtml(entry.date);
+    const tags = topicNamesForEntry(entry);
+    const tagHtml = tags.length
+      ? `<p class="ec-tags">${tags.map((t) => escapeHtml(t)).join(" · ")}</p>`
+      : "";
     const body =
       entry.content && entry.content !== "（空）"
         ? mdToHtml(entry.content)
@@ -387,15 +665,12 @@
     return `
       <article class="ec-block">
         <h1 class="ec-date">${heading}</h1>
+        ${tagHtml}
         <div class="ec-body">${body}</div>
       </article>
     `;
   }
 
-  /**
-   * Fill on-screen export panel with date-grouped note HTML.
-   * Panel is visible (opacity ~1, fixed, sized) so html2canvas/html2pdf get non-zero pixels.
-   */
   function fillExportPanel(entries, label) {
     const card = $("#exportCard");
     const blocks = entries.map(noteBlockHtml).join('<hr class="ec-sep" />');
@@ -422,7 +697,6 @@
   async function prepareCapture(card) {
     card.classList.add("is-capturing");
     card.setAttribute("aria-hidden", "false");
-    // Force layout with real dimensions on-screen (not off-DOM / opacity:0)
     card.style.cssText =
       "position:fixed;left:0;top:0;width:640px;max-width:96vw;opacity:1;visibility:visible;pointer-events:none;z-index:2147483000;transform:none;";
     if (document.fonts && document.fonts.ready) {
@@ -433,11 +707,8 @@
       }
     }
     await waitFrames(2);
-    // Ensure non-zero box
     const rect = card.getBoundingClientRect();
-    if (rect.width < 2 || rect.height < 2) {
-      throw new Error("export panel has zero size");
-    }
+    if (rect.width < 2 || rect.height < 2) throw new Error("export panel has zero size");
   }
 
   function teardownCapture(card) {
@@ -447,35 +718,37 @@
     card.innerHTML = "";
   }
 
-  async function exportPdfFromEntries(entries, filename) {
-    const card = fillExportPanel(entries, entries.length > 1 ? `共 ${entries.length} 篇 · 按日期` : "");
+  async function exportPdfFromEntries(entries, filename, label) {
+    const card = fillExportPanel(entries, label || (entries.length > 1 ? `共 ${entries.length} 篇 · 按日期` : ""));
     try {
       await prepareCapture(card);
-      const opt = {
-        margin: [12, 12, 12, 12],
-        filename,
-        image: { type: "jpeg", quality: 0.96 },
-        html2canvas: {
-          scale: 2,
-          useCORS: true,
-          allowTaint: true,
-          backgroundColor: "#FFF8F2",
-          logging: false,
-          windowWidth: Math.max(card.scrollWidth, 640),
-          windowHeight: Math.max(card.scrollHeight, 200),
-        },
-        jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-        pagebreak: { mode: ["css", "legacy"] },
-      };
-      await html2pdf().set(opt).from(card).save();
+      await html2pdf()
+        .set({
+          margin: [12, 12, 12, 12],
+          filename,
+          image: { type: "jpeg", quality: 0.96 },
+          html2canvas: {
+            scale: 2,
+            useCORS: true,
+            allowTaint: true,
+            backgroundColor: "#FFF8F2",
+            logging: false,
+            windowWidth: Math.max(card.scrollWidth, 640),
+            windowHeight: Math.max(card.scrollHeight, 200),
+          },
+          jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+          pagebreak: { mode: ["css", "legacy"] },
+        })
+        .from(card)
+        .save();
       toast("PDF 已下载");
     } finally {
       teardownCapture(card);
     }
   }
 
-  async function exportImageFromEntries(entries, filename) {
-    const card = fillExportPanel(entries, entries.length > 1 ? `共 ${entries.length} 篇 · 按日期` : "");
+  async function exportImageFromEntries(entries, filename, label) {
+    const card = fillExportPanel(entries, label || (entries.length > 1 ? `共 ${entries.length} 篇 · 按日期` : ""));
     try {
       await prepareCapture(card);
       const canvas = await html2canvas(card, {
@@ -498,8 +771,8 @@
     }
   }
 
-  function exportDocxFromEntries(entries, filename) {
-    const card = fillExportPanel(entries, entries.length > 1 ? `共 ${entries.length} 篇 · 按日期` : "");
+  function exportDocxFromEntries(entries, filename, label) {
+    const card = fillExportPanel(entries, label || (entries.length > 1 ? `共 ${entries.length} 篇 · 按日期` : ""));
     const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>暖色手账</title>
 <style>
 body{font-family:Georgia,serif;color:#3D2A1F;line-height:1.7}
@@ -507,33 +780,38 @@ h1{font-size:20pt;margin:1.2em 0 0.4em}
 h2{font-size:14pt;margin:0.4em 0}
 .ec-brand{color:#C45C42;letter-spacing:0.08em}
 .ec-sep{border:none;border-top:1px solid #E8A87C;margin:1.5em 0}
+.ec-tags{color:#8B5E4B;font-size:11pt}
 </style></head><body>${card.innerHTML}</body></html>`;
     card.innerHTML = "";
     if (!window.htmlDocx || !htmlDocx.asBlob) {
       toast("DOCX 库未加载，请检查网络");
       return;
     }
-    const blob = htmlDocx.asBlob(html);
-    downloadBlob(blob, filename);
+    downloadBlob(htmlDocx.asBlob(html), filename);
     toast("DOCX 已下载");
   }
 
-  function exportJsonFromEntries(entries, filename) {
-    const payload = {
-      app: "暖色手账",
-      exportedAt: new Date().toISOString(),
-      notes: entries.map(({ date, title, content }) => ({ date, title, content })),
-    };
+  function exportJsonFromEntries(entries, filename, extra) {
+    const payload = Object.assign(
+      {
+        app: "暖色手账",
+        exportedAt: new Date().toISOString(),
+        notes: entries.map(({ date, title, content, topicIds }) => ({
+          date,
+          title,
+          content,
+          topics: topicNamesForEntry({ topicIds }),
+          topicIds: topicIds || [],
+        })),
+      },
+      extra || {}
+    );
     downloadText(JSON.stringify(payload, null, 2), filename, "application/json");
     toast("JSON 已下载");
   }
 
   function exportMdFromEntries(entries, filename, heading) {
-    downloadText(
-      notesToMarkdown(entries, heading),
-      filename,
-      "text/markdown;charset=utf-8"
-    );
+    downloadText(notesToMarkdown(entries, heading), filename, "text/markdown;charset=utf-8");
     toast("Markdown 已下载");
   }
 
@@ -572,7 +850,7 @@ h2{font-size:14pt;margin:0.4em 0}
 
   async function exportAll(type) {
     flushEditorIfNeeded();
-    const entries = getSortedNotes(false); // newest first
+    const entries = getSortedNotes(false);
     if (!entries.length) {
       alertNoNotes();
       return;
@@ -586,18 +864,17 @@ h2{font-size:14pt;margin:0.4em 0}
         exportJsonFromEntries(entries, "暖色手账-全部.json");
         break;
       case "pdf":
-        await exportPdfFromEntries(entries, "暖色手账-全部.pdf");
+        await exportPdfFromEntries(entries, "暖色手账-全部.pdf", "全部 · 按日期");
         break;
       case "docx":
-        exportDocxFromEntries(entries, "暖色手账-全部.docx");
+        exportDocxFromEntries(entries, "暖色手账-全部.docx", "全部 · 按日期");
         break;
       case "image":
       case "png":
       case "图":
-        await exportImageFromEntries(entries, "暖色手账-全部.png");
+        await exportImageFromEntries(entries, "暖色手账-全部.png", "全部 · 按日期");
         break;
       default:
-        // 「全部」默认：JSON 数组 + MD，均按日期成块
         exportJsonFromEntries(entries, "暖色手账-全部.json");
         setTimeout(() => {
           exportMdFromEntries(entries, "暖色手账-全部.md", "暖色手账 · 全部（按日期）");
@@ -606,18 +883,79 @@ h2{font-size:14pt;margin:0.4em 0}
     }
   }
 
+  async function exportTopic(topicId, type) {
+    flushEditorIfNeeded();
+    const topic = findTopic(topicId);
+    if (!topic) {
+      toast("主题不存在");
+      return;
+    }
+    const entries = getEntriesForTopic(topicId, true);
+    if (!entries.length) {
+      alertNoNotes();
+      return;
+    }
+    const safe = topic.name.replace(/[\\/:*?"<>|]/g, "_");
+    const label = `学习线 · ${topic.name} · 共 ${entries.length} 篇`;
+    switch (type) {
+      case "md":
+        exportMdFromEntries(entries, `暖色手账-${safe}.md`, label);
+        break;
+      case "json":
+        exportJsonFromEntries(entries, `暖色手账-${safe}.json`, { topic: topic.name });
+        break;
+      case "pdf":
+        await exportPdfFromEntries(entries, `暖色手账-${safe}.pdf`, label);
+        break;
+      case "docx":
+        exportDocxFromEntries(entries, `暖色手账-${safe}.docx`, label);
+        break;
+      case "image":
+        await exportImageFromEntries(entries, `暖色手账-${safe}.png`, label);
+        break;
+      default:
+        break;
+    }
+  }
+
+  async function exportByTopicPrompt() {
+    const topics = getTopics();
+    if (!topics.length) {
+      window.alert("还没有主题。请先到「学习线」新建主题。");
+      return;
+    }
+    const list = topics.map((t, i) => `${i + 1}. ${t.name}`).join("\n");
+    const pick = window.prompt(`按主题导出（把该主题下所有日期内容合在一起）\n输入序号或主题名：\n${list}`, "1");
+    if (pick === null) return;
+    const trimmed = pick.trim();
+    let topic =
+      topics.find((t) => t.name === trimmed) ||
+      topics[Number(trimmed) - 1] ||
+      null;
+    if (!topic) {
+      toast("未找到主题");
+      return;
+    }
+    const fmt = window.prompt("导出格式：md / json / pdf / docx / image", "md");
+    if (fmt === null) return;
+    await exportTopic(topic.id, (fmt || "md").toLowerCase().trim());
+  }
+
   async function handleExport(type) {
     try {
+      if (type === "by-topic") {
+        await exportByTopicPrompt();
+        return;
+      }
       if (type === "all" || type === "all-json") {
         const choice = window.prompt(
           "导出全部笔记（按日期分组）。\n输入格式：md / json / pdf / docx / image\n留空则同时导出 JSON + MD",
           ""
         );
-        if (choice === null) return; // cancelled
+        if (choice === null) return;
         await exportAll(choice);
         return;
       }
-      // Top-bar format buttons: current day (active / today)
       await exportDay(type, resolveDayForExport());
     } catch (err) {
       console.error(err);
@@ -634,6 +972,50 @@ h2{font-size:14pt;margin:0.4em 0}
       viewYear = t.getFullYear();
       viewMonth = t.getMonth();
       renderCalendar(true);
+    });
+
+    $("#tabCalendar").addEventListener("click", () => setMode("calendar"));
+    $("#tabTopics").addEventListener("click", () => setMode("topics"));
+    $("#addTopicBtn").addEventListener("click", () => promptNewTopic());
+    $("#sheetAddTopic").addEventListener("click", () => {
+      const t = promptNewTopic();
+      if (t && !selectedTopicIds.includes(t.id)) {
+        selectedTopicIds.push(t.id);
+        dirty = true;
+        setStatus("未保存…");
+        renderTopicChips();
+      }
+    });
+    $("#backToTopics").addEventListener("click", () => setMode("topics"));
+    $("#renameTopicBtn").addEventListener("click", () => {
+      const topic = findTopic(activeTopicId);
+      if (!topic) return;
+      const name = window.prompt("重命名主题", topic.name);
+      if (name === null) return;
+      if (renameTopic(activeTopicId, name)) {
+        toast("已重命名");
+        renderTopicDetail();
+        renderTopicChips();
+      }
+    });
+    $("#deleteTopicBtn").addEventListener("click", () => {
+      const topic = findTopic(activeTopicId);
+      if (!topic) return;
+      if (!window.confirm(`删除学习线「${topic.name}」？\n日记内容仍保留，只是去掉此标签。`)) return;
+      deleteTopic(activeTopicId);
+      activeTopicId = null;
+      toast("已删除主题");
+      setMode("topics");
+      renderTopicChips();
+    });
+
+    $("#insertTemplate").addEventListener("click", () => {
+      if (!easyMDE) return;
+      const cur = easyMDE.value();
+      easyMDE.value(cur ? cur + "\n\n" + TEMPLATE_MD : TEMPLATE_MD);
+      dirty = true;
+      setStatus("未保存…");
+      toast("已插入模板");
     });
 
     $("#closeSheet").addEventListener("click", closeEditor);
@@ -670,10 +1052,20 @@ h2{font-size:14pt;margin:0.4em 0}
 
     $$("[data-day-export]").forEach((btn) => {
       btn.addEventListener("click", async () => {
-        const type = btn.dataset.dayExport;
-        const day = activeDate || todayKey();
         try {
-          await exportDay(type, day);
+          await exportDay(btn.dataset.dayExport, activeDate || todayKey());
+        } catch (err) {
+          console.error(err);
+          toast("导出失败");
+        }
+      });
+    });
+
+    $$("[data-topic-export]").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        if (!activeTopicId) return;
+        try {
+          await exportTopic(activeTopicId, btn.dataset.topicExport);
         } catch (err) {
           console.error(err);
           toast("导出失败");
@@ -683,12 +1075,13 @@ h2{font-size:14pt;margin:0.4em 0}
   }
 
   function boot() {
+    loadStore(); // migrate / seed
     const t = new Date();
     viewYear = t.getFullYear();
     viewMonth = t.getMonth();
     initWeekdays();
     initEditor();
-    renderCalendar(false);
+    setMode("calendar");
     bind();
   }
 

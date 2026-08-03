@@ -1,32 +1,16 @@
-# 暖色手账 · Warm Journal
+# 暖色手账
 
-温暖桃色纸感的按日手账，数据保存在浏览器本地（`localStorage`）。
+按日期写日记，按「学习线」主题串起来。主题自建（PolarDB / Java / 英语…任意科目）。
 
-## 使用
-
-1. 打开页面，在月历上点选日期
-2. 在底部抽屉中写标题与 Markdown 正文
-3. 失焦 / 定时自动保存，也可点「保存」
-4. 有笔记的日期会显示小圆点；今天高亮显示
-5. 底部导出栏：MD / JSON / PDF / DOCX / 图片；「全部」导出全部笔记的 JSON + 合并 Markdown
-
-## 在线地址（GitHub Pages）
+## 在线访问
 
 https://junjiewq.github.io/warm-notebook/
 
-## 本地预览
+## 用法
 
-直接用浏览器打开 `index.html`，或：
+1. **日历**：点日期写 Markdown 手账  
+2. **学习线**：新建任意主题 → 写日记时点选主题标签（可多选）  
+3. 点进某条学习线：按时间看该主题下全部笔记  
+4. **导出**：当日 / 全部按日 / 按主题合并（MD、JSON、PDF、DOCX、图片）
 
-```bash
-cd warm-notebook
-python3 -m http.server 8080
-```
-
-然后访问 `http://localhost:8080`。
-
-## 技术
-
-- EasyMDE（Markdown 编辑）
-- marked / html2pdf.js / html2canvas / html-docx-js / FileSaver（导出）
-- 纯前端，无后端
+数据保存在浏览器 `localStorage`（本机）。

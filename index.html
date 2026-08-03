@@ -18,31 +18,76 @@
   <header class="hero">
     <p class="eyebrow">Daily · Soft Paper</p>
     <h1 class="brand">暖色手账</h1>
-    <p class="tagline">把今天的光，轻轻记在一页纸上</p>
+    <p class="tagline">按日期写，按主题串——多条学习线，轻轻收在一页纸上</p>
   </header>
 
   <main class="desk">
-    <section class="journal" aria-label="月历手账">
-      <div class="cal-toolbar">
-        <button type="button" class="nav-btn" id="prevMonth" aria-label="上一月">‹</button>
-        <h2 class="month-label" id="monthLabel"></h2>
-        <button type="button" class="nav-btn" id="nextMonth" aria-label="下一月">›</button>
-      </div>
-      <button type="button" class="today-chip" id="goToday">回到今天</button>
-      <div class="weekday-row" id="weekdayRow"></div>
-      <div class="day-grid" id="dayGrid" role="grid" aria-label="日期"></div>
-      <p class="hint">点选日期，展开当日手账</p>
-    </section>
+    <nav class="mode-tabs" role="tablist" aria-label="视图切换">
+      <button type="button" class="mode-tab is-active" role="tab" aria-selected="true" data-mode="calendar" id="tabCalendar">日历</button>
+      <button type="button" class="mode-tab" role="tab" aria-selected="false" data-mode="topics" id="tabTopics">学习线</button>
+    </nav>
 
-    <aside class="export-bar" aria-label="导出">
-      <span class="export-label">导出当日</span>
+    <div class="desk-grid" id="deskGrid">
+      <!-- Calendar axis -->
+      <section class="journal panel" id="panelCalendar" aria-label="月历手账" data-panel="calendar">
+        <div class="cal-toolbar">
+          <button type="button" class="nav-btn" id="prevMonth" aria-label="上一月">‹</button>
+          <h2 class="month-label" id="monthLabel"></h2>
+          <button type="button" class="nav-btn" id="nextMonth" aria-label="下一月">›</button>
+        </div>
+        <button type="button" class="today-chip" id="goToday">回到今天</button>
+        <div class="weekday-row" id="weekdayRow"></div>
+        <div class="day-grid" id="dayGrid" role="grid" aria-label="日期"></div>
+        <p class="hint">点选日期，展开当日手账；可挂上多条学习线</p>
+      </section>
+
+      <!-- Topics axis -->
+      <section class="journal panel" id="panelTopics" aria-label="学习线" data-panel="topics" hidden>
+        <div class="topics-head">
+          <h2 class="panel-title">学习线</h2>
+          <button type="button" class="text-btn" id="addTopicBtn">＋ 新建主题</button>
+        </div>
+        <p class="hint topics-hint">主题自建，不限科目。点进一条学习线，按时间看全部笔记。</p>
+        <ul class="topic-list" id="topicList"></ul>
+        <p class="empty-hint" id="topicsEmpty" hidden>还没有主题。点上方「新建主题」开始一条学习线。</p>
+      </section>
+
+      <!-- Topic detail (chronological notes) -->
+      <section class="journal panel" id="panelTopicDetail" aria-label="主题笔记" data-panel="topic-detail" hidden>
+        <div class="topics-head">
+          <button type="button" class="text-btn" id="backToTopics">← 全部学习线</button>
+          <div class="topic-detail-actions">
+            <button type="button" class="text-btn" id="renameTopicBtn" title="重命名">重命名</button>
+            <button type="button" class="text-btn danger" id="deleteTopicBtn" title="删除主题">删除</button>
+          </div>
+        </div>
+        <h2 class="panel-title topic-detail-name" id="topicDetailName"></h2>
+        <p class="hint" id="topicDetailMeta"></p>
+        <div class="topic-export-row">
+          <span class="export-label">导出本主题</span>
+          <div class="export-actions">
+            <button type="button" class="exp-btn" data-topic-export="md">MD</button>
+            <button type="button" class="exp-btn" data-topic-export="json">JSON</button>
+            <button type="button" class="exp-btn" data-topic-export="pdf">PDF</button>
+            <button type="button" class="exp-btn" data-topic-export="docx">DOCX</button>
+            <button type="button" class="exp-btn" data-topic-export="image">图</button>
+          </div>
+        </div>
+        <ul class="topic-notes" id="topicNotes"></ul>
+        <p class="empty-hint" id="topicNotesEmpty" hidden>这条学习线还没有笔记。在日历里写日记时，点选主题标签即可挂上。</p>
+      </section>
+    </div>
+
+    <aside class="export-bar" aria-label="导出" id="mainExportBar">
+      <span class="export-label">导出</span>
       <div class="export-actions">
-        <button type="button" class="exp-btn" data-export="md" title="导出当日 Markdown">MD</button>
-        <button type="button" class="exp-btn" data-export="json" title="导出当日 JSON">JSON</button>
-        <button type="button" class="exp-btn" data-export="pdf" title="导出当日 PDF">PDF</button>
-        <button type="button" class="exp-btn" data-export="docx" title="导出当日 Word">DOCX</button>
-        <button type="button" class="exp-btn" data-export="image" title="导出当日图片">图</button>
-        <button type="button" class="exp-btn accent" data-export="all" title="导出全部（按日期分组，可选格式）">全部</button>
+        <button type="button" class="exp-btn" data-export="md" title="导出当日 Markdown">当日 MD</button>
+        <button type="button" class="exp-btn" data-export="json" title="导出当日 JSON">当日 JSON</button>
+        <button type="button" class="exp-btn" data-export="pdf" title="导出当日 PDF">当日 PDF</button>
+        <button type="button" class="exp-btn" data-export="docx" title="导出当日 Word">当日 DOCX</button>
+        <button type="button" class="exp-btn" data-export="image" title="导出当日图片">当日图</button>
+        <button type="button" class="exp-btn accent" data-export="all" title="导出全部（按日期）">全部·按日</button>
+        <button type="button" class="exp-btn accent soft" data-export="by-topic" title="按主题导出">按主题</button>
       </div>
     </aside>
   </main>
@@ -63,6 +108,21 @@
         <span class="field-label">标题（可选）</span>
         <input type="text" id="noteTitle" placeholder="给这一天起个名字…" maxlength="120" autocomplete="off" />
       </label>
+
+      <div class="field">
+        <div class="field-label-row">
+          <span class="field-label">学习线（可多选）</span>
+          <button type="button" class="text-btn tiny" id="sheetAddTopic">＋ 新主题</button>
+        </div>
+        <div class="topic-chips" id="topicChips" role="group" aria-label="选择主题"></div>
+      </div>
+
+      <details class="template-hint">
+        <summary>可选模板提示</summary>
+        <p class="template-lines">目标 · 学到了 · 主题 · 疑问</p>
+        <button type="button" class="text-btn tiny" id="insertTemplate">插入到正文</button>
+      </details>
+
       <div class="editor-wrap">
         <textarea id="noteBody"></textarea>
       </div>
@@ -81,9 +141,7 @@
     </footer>
   </aside>
 
-  <!-- Export render panel: sized on-screen while capturing (PDF / image) -->
   <div id="exportCard" class="export-card" aria-hidden="true"></div>
-
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
   <script src="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.js"></script>

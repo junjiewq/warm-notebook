@@ -693,6 +693,252 @@ body {
   }
 }
 
+/* —— Mode tabs & topics (学习线) —— */
+.mode-tabs {
+  display: flex;
+  gap: 0.35rem;
+  margin: 0 auto 1rem;
+  max-width: 420px;
+  padding: 0.25rem;
+  border-radius: 999px;
+  background: rgba(255, 248, 242, 0.72);
+  border: 1px solid rgba(232, 168, 124, 0.35);
+  backdrop-filter: blur(8px);
+}
+
+.mode-tab {
+  flex: 1;
+  border: 0;
+  border-radius: 999px;
+  padding: 0.55rem 0.9rem;
+  font-family: var(--font-ui);
+  font-size: 0.88rem;
+  font-weight: 500;
+  color: var(--ink-700);
+  background: transparent;
+  cursor: pointer;
+  transition: background 0.25s, color 0.25s, transform 0.2s;
+}
+
+.mode-tab.is-active {
+  background: linear-gradient(135deg, #f0a878, #e8896a);
+  color: #fffaf6;
+  box-shadow: 0 4px 14px rgba(196, 92, 66, 0.22);
+}
+
+.mode-tab:active {
+  transform: scale(0.98);
+}
+
+.panel-title {
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--ink-900);
+  margin: 0;
+}
+
+.topics-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.text-btn {
+  border: 0;
+  background: transparent;
+  color: var(--coral-600, #c45c42);
+  font-family: var(--font-ui);
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0.25rem 0.35rem;
+}
+
+.text-btn.tiny {
+  font-size: 0.78rem;
+}
+
+.text-btn.danger {
+  color: #b33b2e;
+}
+
+.text-btn:hover {
+  text-decoration: underline;
+}
+
+.topic-list,
+.topic-notes {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.topic-item-btn,
+.topic-note-btn {
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgba(232, 168, 124, 0.4);
+  border-radius: 16px;
+  padding: 0.9rem 1rem;
+  background: linear-gradient(180deg, #fffaf6, #fff3ea);
+  cursor: pointer;
+  font-family: var(--font-ui);
+  color: var(--ink-900);
+  transition: transform 0.2s, box-shadow 0.25s;
+}
+
+.topic-item-btn:hover,
+.topic-note-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 20px rgba(196, 92, 66, 0.12);
+}
+
+.topic-item-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.topic-item-name {
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  font-weight: 600;
+}
+
+.topic-item-meta {
+  font-size: 0.78rem;
+  color: var(--ink-700);
+  opacity: 0.85;
+}
+
+.topic-note-btn {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.topic-note-date {
+  font-size: 0.75rem;
+  color: var(--coral-600, #c45c42);
+  letter-spacing: 0.02em;
+}
+
+.topic-note-title {
+  font-family: var(--font-display);
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.topic-note-preview {
+  font-size: 0.8rem;
+  color: var(--ink-700);
+  line-height: 1.45;
+}
+
+.empty-hint {
+  margin: 1.25rem 0 0;
+  text-align: center;
+  color: var(--ink-700);
+  font-size: 0.88rem;
+  opacity: 0.85;
+}
+
+.topic-detail-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.topic-export-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin: 0.85rem 0 0.25rem;
+}
+
+.topic-detail-name {
+  margin-top: 0.35rem;
+}
+
+.field-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+
+.topic-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  min-height: 2rem;
+}
+
+.chip {
+  border: 1px solid rgba(232, 168, 124, 0.55);
+  background: #fff8f2;
+  color: var(--ink-800, #4a3228);
+  border-radius: 999px;
+  padding: 0.35rem 0.75rem;
+  font-family: var(--font-ui);
+  font-size: 0.78rem;
+  cursor: pointer;
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+}
+
+.chip.is-on {
+  background: linear-gradient(135deg, #f0a878, #e8896a);
+  border-color: transparent;
+  color: #fffaf6;
+}
+
+.chips-empty {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--ink-700);
+  opacity: 0.8;
+}
+
+.template-hint {
+  margin: 0.75rem 0 0.5rem;
+  border-radius: 12px;
+  background: rgba(255, 243, 234, 0.7);
+  padding: 0.45rem 0.7rem;
+  font-family: var(--font-ui);
+  font-size: 0.8rem;
+  color: var(--ink-700);
+}
+
+.template-hint summary {
+  cursor: pointer;
+  font-weight: 500;
+}
+
+.template-lines {
+  margin: 0.4rem 0 0.35rem;
+  opacity: 0.9;
+}
+
+.exp-btn.soft {
+  background: rgba(255, 248, 242, 0.9);
+  border-color: rgba(232, 168, 124, 0.55);
+  color: var(--ink-800, #4a3228);
+}
+
+.export-card .ec-tags {
+  margin: 0 0 0.6rem;
+  font-size: 0.82rem;
+  color: #8b5e4b;
+}
+
 @media (min-width: 520px) {
   .sheet {
     left: 50%;
