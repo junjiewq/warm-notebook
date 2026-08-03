@@ -246,7 +246,11 @@
     }, 2200);
   }
 
-  /* —— View mode —— */
+  /* —— View mode (mobile tabs; ≥1000px calendar + topics side-by-side) —— */
+  function isWideDesktop() {
+    return window.matchMedia("(min-width: 1000px)").matches;
+  }
+
   function setMode(mode) {
     viewMode = mode;
     const cal = $("#panelCalendar");
@@ -255,20 +259,32 @@
     const exportBar = $("#mainExportBar");
     const tabCal = $("#tabCalendar");
     const tabTop = $("#tabTopics");
+    const desk = $("#deskGrid");
 
-    cal.hidden = mode !== "calendar";
-    topics.hidden = mode !== "topics";
-    detail.hidden = mode !== "topic-detail";
-    if (exportBar) exportBar.hidden = mode === "topic-detail";
+    const showSide = isWideDesktop() && mode !== "topic-detail";
+    const showCal = mode === "calendar" || showSide;
+    const showTopicList = mode === "topics" || showSide;
+    const showDetail = mode === "topic-detail";
 
+    cal.hidden = !showCal;
+    topics.hidden = !showTopicList;
+    detail.hidden = !showDetail;
+    if (exportBar) exportBar.hidden = showDetail;
+
+    if (desk) {
+      desk.classList.toggle("desk-grid--split", showCal && showTopicList);
+      desk.classList.toggle("desk-grid--detail", showDetail);
+    }
+
+    const topicsActive = mode === "topics" || mode === "topic-detail";
     tabCal.classList.toggle("is-active", mode === "calendar");
-    tabTop.classList.toggle("is-active", mode === "topics" || mode === "topic-detail");
+    tabTop.classList.toggle("is-active", topicsActive);
     tabCal.setAttribute("aria-selected", mode === "calendar" ? "true" : "false");
-    tabTop.setAttribute("aria-selected", mode !== "calendar" ? "true" : "false");
+    tabTop.setAttribute("aria-selected", topicsActive ? "true" : "false");
 
-    if (mode === "calendar") renderCalendar(false);
-    if (mode === "topics") renderTopicList();
-    if (mode === "topic-detail") renderTopicDetail();
+    if (showCal) renderCalendar(false);
+    if (showTopicList) renderTopicList();
+    if (showDetail) renderTopicDetail();
   }
 
   /* —— Calendar —— */
@@ -1071,6 +1087,12 @@ h2{font-size:14pt;margin:0.4em 0}
           toast("导出失败");
         }
       });
+    });
+
+    let resizeTimer;
+    window.addEventListener("resize", () => {
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => setMode(viewMode), 120);
     });
   }
 
