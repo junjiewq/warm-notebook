@@ -35,14 +35,14 @@
     </section>
 
     <aside class="export-bar" aria-label="导出">
-      <span class="export-label">导出</span>
+      <span class="export-label">导出当日</span>
       <div class="export-actions">
-        <button type="button" class="exp-btn" data-export="md" title="Markdown">MD</button>
-        <button type="button" class="exp-btn" data-export="json" title="JSON">JSON</button>
-        <button type="button" class="exp-btn" data-export="pdf" title="PDF">PDF</button>
-        <button type="button" class="exp-btn" data-export="docx" title="Word">DOCX</button>
-        <button type="button" class="exp-btn" data-export="image" title="图片">图</button>
-        <button type="button" class="exp-btn accent" data-export="all-json" title="全部 JSON">全部</button>
+        <button type="button" class="exp-btn" data-export="md" title="导出当日 Markdown">MD</button>
+        <button type="button" class="exp-btn" data-export="json" title="导出当日 JSON">JSON</button>
+        <button type="button" class="exp-btn" data-export="pdf" title="导出当日 PDF">PDF</button>
+        <button type="button" class="exp-btn" data-export="docx" title="导出当日 Word">DOCX</button>
+        <button type="button" class="exp-btn" data-export="image" title="导出当日图片">图</button>
+        <button type="button" class="exp-btn accent" data-export="all" title="导出全部（按日期分组，可选格式）">全部</button>
       </div>
     </aside>
   </main>
@@ -81,7 +81,7 @@
     </footer>
   </aside>
 
-  <!-- Hidden render target for exports -->
+  <!-- Export render panel: sized on-screen while capturing (PDF / image) -->
   <div id="exportCard" class="export-card" aria-hidden="true"></div>
 
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
