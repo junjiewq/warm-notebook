@@ -375,6 +375,42 @@
     return t;
   }
 
+  function promptRenameTopic(id) {
+    const topic = findTopic(id);
+    if (!topic) return;
+    const name = window.prompt("修改主题名称", topic.name);
+    if (name === null) return;
+    const n = name.trim();
+    if (!n) {
+      toast("名称不能为空");
+      return;
+    }
+    if (renameTopic(id, n)) {
+      toast("已修改为「" + n + "」");
+      renderTopicList();
+      renderTopicChips();
+      if (viewMode === "topic-detail" && activeTopicId === id) renderTopicDetail();
+    }
+  }
+
+  function promptDeleteTopic(id) {
+    const topic = findTopic(id);
+    if (!topic) return;
+    if (!window.confirm(`删除学习线「${topic.name}」？\n日记内容仍保留，只是去掉此标签。`)) return;
+    deleteTopic(id);
+    if (selectedTopicIds.includes(id)) {
+      selectedTopicIds = selectedTopicIds.filter((x) => x !== id);
+    }
+    toast("已删除「" + topic.name + "」");
+    renderTopicChips();
+    if (activeTopicId === id) {
+      activeTopicId = null;
+      setMode("topics");
+    } else {
+      renderTopicList();
+    }
+  }
+
   function renderTopicList() {
     const list = $("#topicList");
     const empty = $("#topicsEmpty");
@@ -386,13 +422,27 @@
       const li = document.createElement("li");
       li.className = "topic-item";
       li.innerHTML = `
-        <button type="button" class="topic-item-btn" data-topic-id="${escapeHtml(t.id)}">
+        <button type="button" class="topic-item-main" data-topic-open="${escapeHtml(t.id)}">
           <span class="topic-item-name">${escapeHtml(t.name)}</span>
-          <span class="topic-item-meta">${count} 篇</span>
-        </button>`;
-      li.querySelector("button").addEventListener("click", () => {
+          <span class="topic-item-count">${count} 篇</span>
+        </button>
+        <div class="topic-item-ops">
+          <button type="button" class="icon-mini" data-topic-rename="${escapeHtml(t.id)}" title="修改" aria-label="修改 ${escapeHtml(t.name)}">改</button>
+          <button type="button" class="icon-mini danger" data-topic-delete="${escapeHtml(t.id)}" title="删除" aria-label="删除 ${escapeHtml(t.name)}">删</button>
+        </div>`;
+      li.querySelector("[data-topic-open]").addEventListener("click", () => {
         activeTopicId = t.id;
         setMode("topic-detail");
+      });
+      li.querySelector("[data-topic-rename]").addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        promptRenameTopic(t.id);
+      });
+      li.querySelector("[data-topic-delete]").addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        promptDeleteTopic(t.id);
       });
       list.appendChild(li);
     });

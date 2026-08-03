@@ -462,8 +462,20 @@ body {
   border-radius: 10px;
   background: rgba(224, 168, 110, 0.18);
   color: var(--ink-700);
-  font-size: 0.85rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  font-family: var(--font-ui);
   cursor: pointer;
+  touch-action: manipulation;
+}
+
+.icon-mini.danger {
+  background: rgba(179, 59, 46, 0.12);
+  color: #b33b2e;
+}
+
+.icon-mini:active {
+  transform: scale(0.94);
 }
 
 .topic-note-card {
