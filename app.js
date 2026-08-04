@@ -755,7 +755,8 @@
     }
   }
 
-  function scrubEditorJunk(ed) {
+  function scrubEditorJunk(ed, opts) {
+    const aggressive = !!(opts && opts.aggressive);
     if (!ed || ed.removed) return 0;
     let body;
     try {
@@ -786,7 +787,6 @@
         n += 1;
       }
     });
-    // 去掉单独残留的 image.png 文本
     const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
     const dropTexts = [];
     while (walker.nextNode()) {
@@ -795,26 +795,21 @@
       if (/^image\.(png|jpe?g|gif|webp)$/i.test(t)) dropTexts.push(node);
     }
     dropTexts.forEach((node) => {
-      const parent = node.parentNode;
       node.remove();
       n += 1;
-      if (
-        parent &&
-        parent !== body &&
-        !(parent.textContent || "").trim() &&
-        !parent.querySelector("img, table, pre")
-      ) {
-        parent.remove();
-      }
     });
-    body.querySelectorAll("div, p, section, aside, span, figure, figcaption").forEach((el) => {
-      const text = (el.textContent || "").replace(/\u00a0/g, " ").trim();
-      const hasMedia = el.querySelector("img, table, pre, iframe");
-      if ((!text || /^image\.(png|jpe?g|gif|webp)$/i.test(text)) && !hasMedia && !el.closest("table")) {
-        el.remove();
-        n += 1;
-      }
-    });
+    // 千万不要在日常输入时删空 <p>/<br>，否则回车无法换行
+    if (aggressive) {
+      body.querySelectorAll("div, section, aside, span, figure, figcaption").forEach((el) => {
+        if (el.closest("table")) return;
+        const text = (el.textContent || "").replace(/\u00a0/g, " ").trim();
+        const hasMedia = el.querySelector("img, table, pre, iframe, br");
+        if ((!text || /^image\.(png|jpe?g|gif|webp)$/i.test(text)) && !hasMedia) {
+          el.remove();
+          n += 1;
+        }
+      });
+    }
     if (n) {
       dirty = true;
       setStatus("未保存…");
@@ -826,22 +821,47 @@
   function bindBrokenImageGuard(ed) {
     if (!ed || ed._warmImgGuard) return;
     ed._warmImgGuard = true;
-    const run = () => {
-      scrubEditorJunk(ed);
+    const runLight = () => {
+      scrubEditorJunk(ed, { aggressive: false });
       repairEditorImages(ed);
     };
-    // 任何裂图一出现就清掉
-    ed.on("NodeChange SetContent change input Undo Redo", () => {
-      setTimeout(run, 0);
-    });
+    ed.on("SetContent", () => setTimeout(runLight, 0));
     try {
       const body = ed.getBody();
       if (body && window.MutationObserver) {
-        const mo = new MutationObserver(() => {
+        const mo = new MutationObserver((mutations) => {
+          let need = false;
+          for (const m of mutations) {
+            if (m.type === "attributes" && (m.attributeName === "src" || m.attributeName === "data-mce-src")) {
+              need = true;
+              break;
+            }
+            if (m.type === "childList") {
+              const nodes = [...m.addedNodes];
+              if (
+                nodes.some(
+                  (n) =>
+                    n.nodeType === 1 &&
+                    (n.tagName === "IMG" ||
+                      n.tagName === "IFRAME" ||
+                      (n.querySelector && n.querySelector("img[src], iframe")))
+                )
+              ) {
+                need = true;
+                break;
+              }
+            }
+          }
+          if (!need) return;
           clearTimeout(ed._warmScrubTimer);
-          ed._warmScrubTimer = setTimeout(run, 30);
+          ed._warmScrubTimer = setTimeout(runLight, 40);
         });
-        mo.observe(body, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "data-mce-src", "alt"] });
+        mo.observe(body, {
+          childList: true,
+          subtree: true,
+          attributes: true,
+          attributeFilter: ["src", "data-mce-src", "alt"],
+        });
         ed.on("remove", () => mo.disconnect());
       }
     } catch {
@@ -903,9 +923,9 @@
           for (const file of files) {
             if (await insertImageFromBlob(ed, file, "粘贴图片")) ok += 1;
           }
-          scrubEditorJunk(ed);
+          scrubEditorJunk(ed, { aggressive: true });
           await repairEditorImages(ed);
-          scrubEditorJunk(ed);
+          scrubEditorJunk(ed, { aggressive: false });
 
           if (files.length) {
             toast(ok ? `已粘贴 ${ok} 张图片` : "图片粘贴失败，请点工具栏「图片」");
