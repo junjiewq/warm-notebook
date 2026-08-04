@@ -659,8 +659,10 @@
     const out = [];
     const seen = new Set();
     const push = (file) => {
-      if (!file) return;
-      const key = `${file.name}|${file.size}|${file.type}|${file.lastModified}`;
+      if (!file || !file.size) return;
+      // 允许空 type（部分浏览器截图如此）
+      if (file.type && !/^image\//i.test(file.type)) return;
+      const key = `${file.size}|${file.type}|${file.lastModified}|${file.name || ""}`;
       if (seen.has(key)) return;
       seen.add(key);
       out.push(file);
@@ -668,40 +670,175 @@
     if (!dataTransfer) return out;
     try {
       if (dataTransfer.items && dataTransfer.items.length) {
-        [...dataTransfer.items].forEach((item) => {
-          if (item.kind === "file" && (!item.type || /^image\//.test(item.type))) {
+        for (let i = 0; i < dataTransfer.items.length; i++) {
+          const item = dataTransfer.items[i];
+          if (!item) continue;
+          if (item.kind === "file" && (!item.type || /^image\//i.test(item.type))) {
             push(item.getAsFile());
           }
-        });
+        }
       }
       if (dataTransfer.files && dataTransfer.files.length) {
-        [...dataTransfer.files].forEach((f) => {
-          if (!f.type || /^image\//.test(f.type)) push(f);
-        });
+        for (let i = 0; i < dataTransfer.files.length; i++) {
+          push(dataTransfer.files[i]);
+        }
+      }
+    } catch (err) {
+      console.warn("collectClipboardImages", err);
+    }
+    return out;
+  }
+
+  async function dataUrlsFromClipboardHtml(html) {
+    const urls = [];
+    if (!html || !/<img\b/i.test(html)) return urls;
+    try {
+      const doc = new DOMParser().parseFromString(html, "text/html");
+      for (const img of doc.querySelectorAll("img")) {
+        const src = (img.getAttribute("src") || "").trim();
+        if (src.startsWith("data:image/")) {
+          urls.push(src);
+          continue;
+        }
+        if (src.startsWith("blob:")) {
+          try {
+            const blob = await fetch(src).then((r) => r.blob());
+            if (blob && blob.size > 0) urls.push(await blobToDataUrl(blob));
+          } catch {
+            /* ignore */
+          }
+        }
       }
     } catch {
       /* ignore */
     }
-    return out.filter((f) => f && f.size > 0);
+    return urls;
+  }
+
+  async function insertImageDataUrl(ed, dataUrl, alt) {
+    if (!ed || !dataUrl || !dataUrl.startsWith("data:image/")) return false;
+    const safeAlt = escapeHtml(alt || "图片");
+    ed.focus();
+    ed.insertContent(
+      `<p style="margin:0.6em 0;"><img src="${dataUrl}" alt="${safeAlt}" data-warm-img="1" style="max-width:100%;width:auto;height:auto;display:inline-block;border-radius:8px;vertical-align:middle;" /></p>`
+    );
+    dirty = true;
+    setStatus("未保存…");
+    scheduleAutosave();
+    return true;
   }
 
   async function insertImageFromBlob(ed, blob, alt) {
     if (!ed || !blob) return false;
     try {
       const dataUrl = await blobToDataUrl(blob);
-      const safeAlt = escapeHtml(alt || "图片");
-      ed.focus();
-      ed.insertContent(
-        `<p style="margin:0.6em 0;"><img src="${dataUrl}" alt="${safeAlt}" data-warm-img="1" style="max-width:100%;width:auto;height:auto;display:inline-block;border-radius:8px;vertical-align:middle;" /></p>`
-      );
-      dirty = true;
-      setStatus("未保存…");
-      scheduleAutosave();
-      return true;
+      return insertImageDataUrl(ed, dataUrl, alt);
     } catch (err) {
       console.error(err);
       return false;
     }
+  }
+
+  function bindEditorImagePaste(ed) {
+    if (ed._warmPasteBound) return;
+    ed._warmPasteBound = true;
+    let pasteLock = false;
+
+    const onPaste = (e) => {
+      if (pasteLock) return;
+      const cd = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
+      if (!cd) return;
+
+      const files = collectClipboardImages(cd);
+      let html = "";
+      try {
+        html = cd.getData("text/html") || "";
+      } catch {
+        /* ignore */
+      }
+
+      const likelyImagePaste =
+        files.length > 0 || /<img[^>]+src=["'](?:blob:|data:image)/i.test(html);
+
+      if (!likelyImagePaste) {
+        // 纯网页复制：不拦截，交给 TinyMCE；预处理会清裂图
+        return;
+      }
+
+      pasteLock = true;
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+
+      (async () => {
+        toast("正在粘贴图片…");
+        let ok = 0;
+        try {
+          for (const file of files) {
+            if (await insertImageFromBlob(ed, file, "粘贴图片")) ok += 1;
+          }
+          if (!ok) {
+            const urls = await dataUrlsFromClipboardHtml(html);
+            for (const u of urls) {
+              if (await insertImageDataUrl(ed, u, "粘贴图片")) ok += 1;
+            }
+          }
+          // 只清裂图占位，不动刚插入的 data: 图
+          scrubEditorJunk(ed, { aggressive: false });
+          toast(ok ? `已粘贴 ${ok} 张图片` : "未识别到图片，请用工具栏「图片」或拖拽文件");
+        } catch (err) {
+          console.error(err);
+          toast("图片粘贴失败，请用工具栏「图片」");
+        } finally {
+          setTimeout(() => {
+            pasteLock = false;
+          }, 400);
+        }
+      })();
+    };
+
+    ed.on("PastePreProcess", (e) => {
+      if (e && typeof e.content === "string") {
+        // 网页粘贴：去掉无效 img / iframe，保留文字；data: 图保留
+        e.content = sanitizePastedHtml(e.content);
+      }
+    });
+    ed.on("PastePostProcess", (e) => {
+      if (e && e.node && e.node.querySelectorAll) {
+        e.node.querySelectorAll("iframe, object, embed").forEach((el) => el.remove());
+        e.node.querySelectorAll("img").forEach((img) => {
+          const src = img.getAttribute("src") || "";
+          if (src.startsWith("data:image/")) {
+            img.setAttribute("data-warm-img", "1");
+            img.style.maxWidth = "100%";
+            img.style.width = "auto";
+            img.style.display = "inline-block";
+            return;
+          }
+          // blob: 留给 images_upload_handler，不要立刻删
+          if (src.startsWith("blob:")) return;
+          if (isBrokenImageSrc(src) || !src) img.remove();
+        });
+      }
+      setTimeout(() => scrubEditorJunk(ed, { aggressive: false }), 0);
+    });
+    ed.on("init", () => {
+      bindBrokenImageGuard(ed);
+      // 只在 iframe document 捕获粘贴（TinyMCE 编辑区在 iframe 内）
+      try {
+        const doc = ed.getDoc();
+        if (doc && !doc._warmPasteBound) {
+          doc._warmPasteBound = true;
+          doc.addEventListener("paste", onPaste, true);
+        }
+      } catch {
+        /* ignore */
+      }
+      setTimeout(() => {
+        scrubEditorJunk(ed, { aggressive: false });
+        repairEditorImages(ed);
+      }, 50);
+    });
   }
 
   function isBrokenImageSrc(src) {
@@ -730,7 +867,17 @@
 
       doc.querySelectorAll("img").forEach((img) => {
         const src = img.getAttribute("src") || "";
-        if (isBrokenImageSrc(src) || !src || src.startsWith("blob:")) {
+        // 保留 data: / http(s): / blob:（blob 稍后由上传 handler 转 data）
+        if (src.startsWith("data:image/") || src.startsWith("blob:") || /^https?:\/\//i.test(src)) {
+          img.style.maxWidth = "100%";
+          img.style.width = "auto";
+          img.style.height = "auto";
+          img.style.display = "inline-block";
+          img.removeAttribute("width");
+          img.removeAttribute("height");
+          return;
+        }
+        if (isBrokenImageSrc(src) || !src) {
           img.remove();
           return;
         }
@@ -876,126 +1023,6 @@
     }
   }
 
-  function bindEditorImagePaste(ed) {
-    const onPaste = (e) => {
-      const cd = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
-      if (!cd) return;
-      const files = collectClipboardImages(cd);
-      let html = "";
-      let text = "";
-      try {
-        html = cd.getData("text/html") || "";
-        text = cd.getData("text/plain") || "";
-      } catch {
-        /* ignore */
-      }
-      const hasImgHtml = /<img\b/i.test(html) || /\bimage\.(png|jpe?g|gif|webp)\b/i.test(html + text);
-
-      // 有图片文件，或 HTML/文本里带 image.png 痕迹：接管粘贴，避免多出裂图
-      if (!files.length && !hasImgHtml) return;
-
-      e.preventDefault();
-      e.stopPropagation();
-      if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
-
-      (async () => {
-        try {
-          let clean = sanitizePastedHtml(html);
-          // 有真实图片文件时，HTML 里的 img 一律丢掉，避免叠出 image.png
-          if (files.length) {
-            clean = clean.replace(/<img\b[^>]*>/gi, "");
-          }
-          clean = clean.replace(/\bimage\.(png|jpe?g|gif|webp)\b/gi, "");
-          clean = sanitizePastedHtml(clean);
-
-          const cleanText = clean.replace(/<[^>]+>/g, "").replace(/\u00a0/g, " ").trim();
-          if (cleanText) {
-            ed.focus();
-            ed.insertContent(clean);
-          } else if (text.trim() && !files.length) {
-            const plain = text
-              .split(/\n+/)
-              .map((line) => line.trim())
-              .filter((line) => line && !/^image\.(png|jpe?g|gif|webp)$/i.test(line))
-              .map((line) => `<p>${escapeHtml(line)}</p>`)
-              .join("");
-            if (plain) {
-              ed.focus();
-              ed.insertContent(plain);
-            }
-          }
-
-          let ok = 0;
-          if (files.length) toast("正在粘贴图片…");
-          for (const file of files) {
-            if (await insertImageFromBlob(ed, file, "粘贴图片")) ok += 1;
-          }
-          scrubEditorJunk(ed, { aggressive: true });
-          await repairEditorImages(ed);
-          scrubEditorJunk(ed, { aggressive: false });
-
-          if (files.length) {
-            toast(ok ? `已粘贴 ${ok} 张图片` : "图片粘贴失败，请点工具栏「图片」");
-          } else if (!ok && hasImgHtml) {
-            toast("已去掉无效图片占位，插图请用截图或工具栏");
-          }
-        } catch (err) {
-          console.error(err);
-          toast("粘贴失败，请用工具栏插入图片");
-        }
-      })();
-    };
-
-    ed.on("paste", onPaste);
-    ed.on("PastePreProcess", (e) => {
-      if (e && typeof e.content === "string") {
-        e.content = sanitizePastedHtml(e.content).replace(/\bimage\.(png|jpe?g|gif|webp)\b/gi, "");
-      }
-    });
-    ed.on("PastePostProcess", (e) => {
-      if (e && e.node && e.node.querySelectorAll) {
-        e.node
-          .querySelectorAll("iframe, object, embed, video, audio, canvas, form, img")
-          .forEach((el) => {
-            if (el.tagName === "IMG") {
-              const src = el.getAttribute("src") || "";
-              if (isBrokenImageSrc(src) || src.startsWith("blob:") || !src) el.remove();
-              else {
-                el.style.maxWidth = "100%";
-                el.style.width = "auto";
-                el.style.height = "auto";
-                el.style.display = "inline-block";
-              }
-            } else el.remove();
-          });
-      }
-      setTimeout(() => {
-        scrubEditorJunk(ed, { aggressive: true });
-        repairEditorImages(ed);
-      }, 0);
-    });
-    ed.on("init", () => {
-      bindBrokenImageGuard(ed);
-      try {
-        const doc = ed.getDoc();
-        if (doc) doc.addEventListener("paste", onPaste, true);
-        const win = ed.getWin();
-        if (win) win.addEventListener("paste", onPaste, true);
-      } catch {
-        /* ignore */
-      }
-      setTimeout(() => {
-        scrubEditorJunk(ed, { aggressive: false });
-        repairEditorImages(ed);
-      }, 50);
-    });
-    ed.on("SetContent", () => {
-      setTimeout(() => {
-        scrubEditorJunk(ed, { aggressive: false });
-        repairEditorImages(ed);
-      }, 0);
-    });
-  }
 
   async function repairEditorImages(ed) {
     if (!ed || ed.removed) return;
@@ -1331,7 +1358,7 @@
         placeholder: "写点什么吧… 插图请用截图粘贴或工具栏「图片」；从网页复制只保留文字和链接",
         font_size_formats: "12px 14px 16px 18px 20px 24px 28px",
         block_formats: "段落=p; 标题 1=h1; 标题 2=h2; 标题 3=h3; 引用=blockquote",
-        paste_data_images: false,
+        paste_data_images: true,
         mobile: {
           toolbar_mode: "sliding",
         },
@@ -1561,7 +1588,13 @@
       dirty = false;
       setTimeout(() => {
         resizeEditorToSheet();
-        $("#noteTitle").focus();
+        unwrapZeroLineHeight(editor);
+        ensureEditableTail(editor);
+        try {
+          editor.focus();
+        } catch {
+          /* ignore */
+        }
       }, 380);
     } catch (err) {
       console.error(err);
