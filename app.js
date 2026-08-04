@@ -833,7 +833,7 @@
       (foot ? foot.offsetHeight : 64) +
       (meta ? meta.offsetHeight : 120) +
       36;
-    return Math.max(260, Math.min(vh - used, vh * 0.62));
+    return Math.max(320, Math.min(vh - used, vh * 0.78));
   }
 
   function getEditorBody() {
