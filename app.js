@@ -959,7 +959,8 @@
       table { border-collapse: collapse; width: 100%; }
       table td, table th { border: 1px solid #E8A87C; padding: 0.4em 0.55em; }
       table th { background: rgba(232,168,124,0.22); }
-      img { max-width: 100%; height: auto; border-radius: 8px; }
+      img { max-width: 100%; width: auto; height: auto; display: inline-block; border-radius: 8px; vertical-align: middle; }
+      img[data-mce-selected] { outline: 2px solid #4C8BF5; outline-offset: 2px; }
       code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
       pre { background: rgba(61,42,31,0.06); padding: 0.75em; border-radius: 8px; overflow: auto; }
       ul, ol { padding-left: 1.35em; }
@@ -1034,7 +1035,7 @@
         toolbar_mode: "sliding",
         toolbar_sticky: true,
         contextmenu: "link image table",
-        paste_data_images: true,
+        paste_data_images: false,
         paste_block_drop: false,
         automatic_uploads: true,
         images_reuse_filename: true,
