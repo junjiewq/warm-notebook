@@ -721,20 +721,80 @@
   function sanitizePastedHtml(html) {
     try {
       const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+      // 文档站复制常带 iframe / 控件骨架，会造成空白大框
+      doc
+        .querySelectorAll(
+          "iframe, object, embed, applet, script, style, link, meta, noscript, template, video, audio, canvas, svg, form, input, button, select, textarea"
+        )
+        .forEach((el) => el.remove());
+
       doc.querySelectorAll("img").forEach((img) => {
         const src = img.getAttribute("src") || "";
-        if (isBrokenImageSrc(src) || !src) img.remove();
-        else {
-          img.style.maxWidth = "100%";
-          img.style.width = "auto";
-          img.style.height = "auto";
-          img.style.display = "inline-block";
+        if (isBrokenImageSrc(src) || !src || src.startsWith("blob:")) {
+          img.remove();
+          return;
         }
+        img.style.maxWidth = "100%";
+        img.style.width = "auto";
+        img.style.height = "auto";
+        img.style.display = "inline-block";
+        img.removeAttribute("width");
+        img.removeAttribute("height");
       });
+
+      // 去掉空壳容器（常见于侧栏/双栏文档布局）
+      doc.querySelectorAll("div, section, article, aside, main, header, footer, span").forEach((el) => {
+        const text = (el.textContent || "").replace(/\u00a0/g, " ").trim();
+        const hasMedia = el.querySelector("img, table, pre, code");
+        if (!text && !hasMedia) el.remove();
+      });
+
       return doc.body ? doc.body.innerHTML : html;
     } catch {
       return html;
     }
+  }
+
+  function scrubEditorJunk(ed) {
+    if (!ed || ed.removed) return 0;
+    let body;
+    try {
+      body = ed.getBody();
+    } catch {
+      return 0;
+    }
+    if (!body) return 0;
+    let n = 0;
+    body
+      .querySelectorAll(
+        "iframe, object, embed, applet, script, style, video, audio, canvas, form, input, button, select, textarea"
+      )
+      .forEach((el) => {
+        el.remove();
+        n += 1;
+      });
+    body.querySelectorAll("img").forEach((img) => {
+      const src = img.getAttribute("src") || "";
+      if (isBrokenImageSrc(src) || !src) {
+        img.remove();
+        n += 1;
+      }
+    });
+    // 空段落/空 div
+    body.querySelectorAll("div, p, section, aside").forEach((el) => {
+      const text = (el.textContent || "").replace(/\u00a0/g, " ").trim();
+      const hasMedia = el.querySelector("img, table, pre, iframe");
+      if (!text && !hasMedia && !el.closest("table")) {
+        el.remove();
+        n += 1;
+      }
+    });
+    if (n) {
+      dirty = true;
+      setStatus("未保存…");
+      scheduleAutosave();
+    }
+    return n;
   }
 
   function bindEditorImagePaste(ed) {
@@ -785,9 +845,12 @@
     });
     ed.on("PastePostProcess", (e) => {
       if (e && e.node && e.node.querySelectorAll) {
+        e.node
+          .querySelectorAll("iframe, object, embed, video, audio, canvas, form")
+          .forEach((el) => el.remove());
         e.node.querySelectorAll("img").forEach((img) => {
           const src = img.getAttribute("src") || "";
-          if (isBrokenImageSrc(src)) img.remove();
+          if (isBrokenImageSrc(src) || src.startsWith("blob:")) img.remove();
           else {
             img.style.maxWidth = "100%";
             img.style.width = "auto";
@@ -796,7 +859,10 @@
           }
         });
       }
-      setTimeout(() => repairEditorImages(ed), 0);
+      setTimeout(() => {
+        scrubEditorJunk(ed);
+        repairEditorImages(ed);
+      }, 0);
     });
     ed.on("init", () => {
       try {
@@ -807,10 +873,16 @@
       } catch {
         /* ignore */
       }
-      setTimeout(() => repairEditorImages(ed), 50);
+      setTimeout(() => {
+        scrubEditorJunk(ed);
+        repairEditorImages(ed);
+      }, 50);
     });
     ed.on("SetContent", () => {
-      setTimeout(() => repairEditorImages(ed), 0);
+      setTimeout(() => {
+        scrubEditorJunk(ed);
+        repairEditorImages(ed);
+      }, 0);
     });
   }
 
@@ -1135,7 +1207,7 @@
         skin: "oxide",
         skin_url: TINYMCE_BASE + "/skins/ui/oxide",
         content_css_cors: true,
-        placeholder: "写点什么吧… 可直接粘贴截图/图片，支持颜色、表格",
+        placeholder: "写点什么吧… 插图请用截图粘贴或工具栏「图片」；从网页复制只保留文字和链接",
         font_size_formats: "12px 14px 16px 18px 20px 24px 28px",
         block_formats: "段落=p; 标题 1=h1; 标题 2=h2; 标题 3=h3; 引用=blockquote",
         link_default_target: "_blank",
@@ -1764,6 +1836,16 @@ td,th{border:1px solid #E8A87C;padding:4px 8px}
       scheduleAutosave();
       toast("已插入模板");
     });
+
+    const scrubBtn = $("#scrubJunkBtn");
+    if (scrubBtn) {
+      scrubBtn.addEventListener("click", () => {
+        if (!editor) return;
+        const n = scrubEditorJunk(editor);
+        repairEditorImages(editor);
+        toast(n ? `已清理 ${n} 处无效内容` : "没有需要清理的内容");
+      });
+    }
 
     $("#closeSheet").addEventListener("click", closeEditor);
     $("#overlay").addEventListener("click", closeEditor);
