@@ -774,17 +774,43 @@
         n += 1;
       });
     body.querySelectorAll("img").forEach((img) => {
-      const src = img.getAttribute("src") || "";
-      if (isBrokenImageSrc(src) || !src) {
+      const src = (img.getAttribute("src") || "").trim();
+      const mce = (img.getAttribute("data-mce-src") || "").trim();
+      if (
+        isBrokenImageSrc(src) ||
+        !src ||
+        isBrokenImageSrc(mce) ||
+        /^image\.(png|jpe?g|gif|webp)$/i.test((img.getAttribute("alt") || "").trim())
+      ) {
         img.remove();
         n += 1;
       }
     });
-    // 空段落/空 div
-    body.querySelectorAll("div, p, section, aside").forEach((el) => {
+    // 去掉单独残留的 image.png 文本
+    const walker = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
+    const dropTexts = [];
+    while (walker.nextNode()) {
+      const node = walker.currentNode;
+      const t = (node.nodeValue || "").trim();
+      if (/^image\.(png|jpe?g|gif|webp)$/i.test(t)) dropTexts.push(node);
+    }
+    dropTexts.forEach((node) => {
+      const parent = node.parentNode;
+      node.remove();
+      n += 1;
+      if (
+        parent &&
+        parent !== body &&
+        !(parent.textContent || "").trim() &&
+        !parent.querySelector("img, table, pre")
+      ) {
+        parent.remove();
+      }
+    });
+    body.querySelectorAll("div, p, section, aside, span, figure, figcaption").forEach((el) => {
       const text = (el.textContent || "").replace(/\u00a0/g, " ").trim();
       const hasMedia = el.querySelector("img, table, pre, iframe");
-      if (!text && !hasMedia && !el.closest("table")) {
+      if ((!text || /^image\.(png|jpe?g|gif|webp)$/i.test(text)) && !hasMedia && !el.closest("table")) {
         el.remove();
         n += 1;
       }
@@ -797,74 +823,133 @@
     return n;
   }
 
+  function bindBrokenImageGuard(ed) {
+    if (!ed || ed._warmImgGuard) return;
+    ed._warmImgGuard = true;
+    const run = () => {
+      scrubEditorJunk(ed);
+      repairEditorImages(ed);
+    };
+    // 任何裂图一出现就清掉
+    ed.on("NodeChange SetContent change input Undo Redo", () => {
+      setTimeout(run, 0);
+    });
+    try {
+      const body = ed.getBody();
+      if (body && window.MutationObserver) {
+        const mo = new MutationObserver(() => {
+          clearTimeout(ed._warmScrubTimer);
+          ed._warmScrubTimer = setTimeout(run, 30);
+        });
+        mo.observe(body, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "data-mce-src", "alt"] });
+        ed.on("remove", () => mo.disconnect());
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
   function bindEditorImagePaste(ed) {
     const onPaste = (e) => {
       const cd = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
       if (!cd) return;
-      const imgs = collectClipboardImages(cd);
-      if (imgs.length) {
-        e.preventDefault();
-        e.stopPropagation();
-        if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
-        toast("正在粘贴图片…");
-        (async () => {
-          let ok = 0;
-          for (const file of imgs) {
-            if (await insertImageFromBlob(ed, file, file.name || "粘贴图片")) ok += 1;
-          }
-          // 清掉可能残留的无效占位
-          await repairEditorImages(ed);
-          toast(ok ? `已粘贴 ${ok} 张图片` : "图片粘贴失败，请用工具栏「图片」按钮");
-        })();
-        return;
-      }
-      // 无文件时：若 HTML 里只有裂图，直接拦住并提示
+      const files = collectClipboardImages(cd);
+      let html = "";
+      let text = "";
       try {
-        const html = cd.getData("text/html") || "";
-        if (html && /<img\b/i.test(html)) {
-          const tmp = document.createElement("div");
-          tmp.innerHTML = html;
-          const all = [...tmp.querySelectorAll("img")];
-          const broken = all.filter((img) => isBrokenImageSrc(img.getAttribute("src") || ""));
-          if (all.length && broken.length === all.length) {
-            e.preventDefault();
-            e.stopPropagation();
-            toast("剪贴板图片无效，请用截图粘贴或点工具栏插入图片");
-          }
-        }
+        html = cd.getData("text/html") || "";
+        text = cd.getData("text/plain") || "";
       } catch {
         /* ignore */
       }
+      const hasImgHtml = /<img\b/i.test(html) || /\bimage\.(png|jpe?g|gif|webp)\b/i.test(html + text);
+
+      // 有图片文件，或 HTML/文本里带 image.png 痕迹：接管粘贴，避免多出裂图
+      if (!files.length && !hasImgHtml) return;
+
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+
+      (async () => {
+        try {
+          let clean = sanitizePastedHtml(html);
+          // 有真实图片文件时，HTML 里的 img 一律丢掉，避免叠出 image.png
+          if (files.length) {
+            clean = clean.replace(/<img\b[^>]*>/gi, "");
+          }
+          clean = clean.replace(/\bimage\.(png|jpe?g|gif|webp)\b/gi, "");
+          clean = sanitizePastedHtml(clean);
+
+          const cleanText = clean.replace(/<[^>]+>/g, "").replace(/\u00a0/g, " ").trim();
+          if (cleanText) {
+            ed.focus();
+            ed.insertContent(clean);
+          } else if (text.trim() && !files.length) {
+            const plain = text
+              .split(/\n+/)
+              .map((line) => line.trim())
+              .filter((line) => line && !/^image\.(png|jpe?g|gif|webp)$/i.test(line))
+              .map((line) => `<p>${escapeHtml(line)}</p>`)
+              .join("");
+            if (plain) {
+              ed.focus();
+              ed.insertContent(plain);
+            }
+          }
+
+          let ok = 0;
+          if (files.length) toast("正在粘贴图片…");
+          for (const file of files) {
+            if (await insertImageFromBlob(ed, file, "粘贴图片")) ok += 1;
+          }
+          scrubEditorJunk(ed);
+          await repairEditorImages(ed);
+          scrubEditorJunk(ed);
+
+          if (files.length) {
+            toast(ok ? `已粘贴 ${ok} 张图片` : "图片粘贴失败，请点工具栏「图片」");
+          } else if (!ok && hasImgHtml) {
+            toast("已去掉无效图片占位，插图请用截图或工具栏");
+          }
+        } catch (err) {
+          console.error(err);
+          toast("粘贴失败，请用工具栏插入图片");
+        }
+      })();
     };
 
     ed.on("paste", onPaste);
     ed.on("PastePreProcess", (e) => {
       if (e && typeof e.content === "string") {
-        e.content = sanitizePastedHtml(e.content);
+        e.content = sanitizePastedHtml(e.content).replace(/\bimage\.(png|jpe?g|gif|webp)\b/gi, "");
       }
     });
     ed.on("PastePostProcess", (e) => {
       if (e && e.node && e.node.querySelectorAll) {
         e.node
-          .querySelectorAll("iframe, object, embed, video, audio, canvas, form")
-          .forEach((el) => el.remove());
-        e.node.querySelectorAll("img").forEach((img) => {
-          const src = img.getAttribute("src") || "";
-          if (isBrokenImageSrc(src) || src.startsWith("blob:")) img.remove();
-          else {
-            img.style.maxWidth = "100%";
-            img.style.width = "auto";
-            img.style.height = "auto";
-            img.style.display = "inline-block";
-          }
-        });
+          .querySelectorAll("iframe, object, embed, video, audio, canvas, form, img")
+          .forEach((el) => {
+            if (el.tagName === "IMG") {
+              const src = el.getAttribute("src") || "";
+              if (isBrokenImageSrc(src) || src.startsWith("blob:") || !src) el.remove();
+              else {
+                el.style.maxWidth = "100%";
+                el.style.width = "auto";
+                el.style.height = "auto";
+                el.style.display = "inline-block";
+              }
+            } else el.remove();
+          });
       }
       setTimeout(() => {
         scrubEditorJunk(ed);
         repairEditorImages(ed);
+        scrubEditorJunk(ed);
       }, 0);
     });
     ed.on("init", () => {
+      bindBrokenImageGuard(ed);
       try {
         const doc = ed.getDoc();
         if (doc) doc.addEventListener("paste", onPaste, true);
