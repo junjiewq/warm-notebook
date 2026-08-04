@@ -692,7 +692,7 @@
       const safeAlt = escapeHtml(alt || "图片");
       ed.focus();
       ed.insertContent(
-        `<p style="margin:0.6em 0;line-height:0;"><img src="${dataUrl}" alt="${safeAlt}" data-warm-img="1" style="max-width:100%;width:auto;height:auto;display:inline-block;border-radius:8px;" /></p>`
+        `<p style="margin:0.6em 0;"><img src="${dataUrl}" alt="${safeAlt}" data-warm-img="1" style="max-width:100%;width:auto;height:auto;display:inline-block;border-radius:8px;vertical-align:middle;" /></p>`
       );
       dirty = true;
       setStatus("未保存…");
@@ -821,49 +821,50 @@
   function bindBrokenImageGuard(ed) {
     if (!ed || ed._warmImgGuard) return;
     ed._warmImgGuard = true;
-    const runLight = () => {
-      scrubEditorJunk(ed, { aggressive: false });
-      repairEditorImages(ed);
-    };
-    ed.on("SetContent", () => setTimeout(runLight, 0));
-    try {
-      const body = ed.getBody();
-      if (body && window.MutationObserver) {
-        const mo = new MutationObserver((mutations) => {
-          let need = false;
-          for (const m of mutations) {
-            if (m.type === "attributes" && (m.attributeName === "src" || m.attributeName === "data-mce-src")) {
-              need = true;
-              break;
-            }
-            if (m.type === "childList") {
-              const nodes = [...m.addedNodes];
-              if (
-                nodes.some(
-                  (n) =>
-                    n.nodeType === 1 &&
-                    (n.tagName === "IMG" ||
-                      n.tagName === "IFRAME" ||
-                      (n.querySelector && n.querySelector("img[src], iframe")))
-                )
-              ) {
-                need = true;
-                break;
-              }
-            }
-          }
-          if (!need) return;
-          clearTimeout(ed._warmScrubTimer);
-          ed._warmScrubTimer = setTimeout(runLight, 40);
-        });
-        mo.observe(body, {
-          childList: true,
-          subtree: true,
-          attributes: true,
-          attributeFilter: ["src", "data-mce-src", "alt"],
-        });
-        ed.on("remove", () => mo.disconnect());
+    // 不再用 MutationObserver / input 监听清空段落——会吞掉回车换行
+    ed.on("SetContent", () => {
+      setTimeout(() => {
+        scrubEditorJunk(ed, { aggressive: false });
+        repairEditorImages(ed);
+        unwrapZeroLineHeight(ed);
+      }, 0);
+    });
+    ed.on("keydown", (e) => {
+      // 在超链接内部按回车：先跳出链接再换行，避免“按了没反应”
+      if (e.key !== "Enter" || e.shiftKey || e.altKey || e.metaKey || e.ctrlKey) return;
+      const node = ed.selection.getNode();
+      const a = ed.dom.getParent(node, "a");
+      if (!a) return;
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        // 在链接后插入新段落
+        const rng = ed.dom.createRng();
+        rng.setStartAfter(a);
+        rng.setEndAfter(a);
+        ed.selection.setRng(rng);
+        ed.insertContent("<p><br data-mce-bogus=\"1\"></p>");
+        // 把光标放到新段落
+        const p = a.nextSibling;
+        if (p) ed.selection.setCursorLocation(p, 0);
+      } catch (err) {
+        console.error(err);
+        ed.execCommand("mceInsertNewLine");
       }
+      dirty = true;
+      setStatus("未保存…");
+      scheduleAutosave();
+    });
+  }
+
+  function unwrapZeroLineHeight(ed) {
+    if (!ed || ed.removed) return;
+    try {
+      ed.getBody().querySelectorAll("[style*='line-height']").forEach((el) => {
+        if (/line-height\s*:\s*0/i.test(el.getAttribute("style") || "")) {
+          el.style.lineHeight = "";
+        }
+      });
     } catch {
       /* ignore */
     }
@@ -963,9 +964,8 @@
           });
       }
       setTimeout(() => {
-        scrubEditorJunk(ed);
+        scrubEditorJunk(ed, { aggressive: true });
         repairEditorImages(ed);
-        scrubEditorJunk(ed);
       }, 0);
     });
     ed.on("init", () => {
@@ -979,13 +979,13 @@
         /* ignore */
       }
       setTimeout(() => {
-        scrubEditorJunk(ed);
+        scrubEditorJunk(ed, { aggressive: false });
         repairEditorImages(ed);
       }, 50);
     });
     ed.on("SetContent", () => {
       setTimeout(() => {
-        scrubEditorJunk(ed);
+        scrubEditorJunk(ed, { aggressive: false });
         repairEditorImages(ed);
       }, 0);
     });
@@ -1290,6 +1290,9 @@
         resize: false,
         min_height: 240,
         height: calcEditorHeight(),
+        forced_root_block: "p",
+        newline_behavior: "block",
+        br_in_pre: false,
         plugins: "lists link autolink image table code fullscreen searchreplace emoticons",
         toolbar:
           "undo redo | blocks | bold italic underline strikethrough | forecolor backcolor | formatpainter | bullist numlist | link unlink | image emoticons table | removeformat | searchreplace code fullscreen",
@@ -2015,7 +2018,7 @@ td,th{border:1px solid #E8A87C;padding:4px 8px}
     if (scrubBtn) {
       scrubBtn.addEventListener("click", () => {
         if (!editor) return;
-        const n = scrubEditorJunk(editor);
+        const n = scrubEditorJunk(editor, { aggressive: true });
         repairEditorImages(editor);
         toast(n ? `已清理 ${n} 处无效内容` : "没有需要清理的内容");
       });
