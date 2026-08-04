@@ -1,6 +1,7 @@
 /**
  * 暖色手账 — 日历打卡 + 可自定义学习线（多主题）
  * localStorage: { version:2, topics:[], notes:{ date: {title,body,topicIds,updatedAt} } }
+ * body 存 HTML（旧 Markdown 在加载时一次性转换）
  */
 (function () {
   "use strict";
@@ -10,8 +11,12 @@
   const SEED_TOPICS = ["PolarDB", "Java", "英语"];
   const WEEKDAYS = ["日", "一", "二", "三", "四", "五", "六"];
   const WEEKDAYS_FULL = ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"];
-  const TEMPLATE_MD =
-    "## 今日目标\n- \n\n## 学到了\n- \n\n## 疑问 & 明天\n- \n";
+  const TEMPLATE_HTML =
+    "<h2>今日目标</h2><ul><li></li></ul><h2>学到了</h2><ul><li></li></ul><h2>疑问 &amp; 明天</h2><ul><li></li></ul>";
+  const TINYMCE_BASE = "https://cdn.jsdelivr.net/npm/tinymce@7.6.1";
+  const IMG_MAX_WIDTH = 1200;
+  const IMG_JPEG_QUALITY = 0.82;
+  const IMG_WARN_BYTES = 1.2 * 1024 * 1024;
 
   const $ = (sel, root = document) => root.querySelector(sel);
   const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
@@ -21,9 +26,17 @@
   let activeTopicId = null;
   let selectedTopicIds = [];
   let viewMode = "calendar"; // calendar | topics | topic-detail
-  let easyMDE = null;
+  let editor = null;
+  let editorReady = null;
   let autosaveTimer = null;
   let dirty = false;
+  let turndownSvc = null;
+
+  /* Format painter state */
+  let fpFormats = null;
+  let fpSticky = false;
+  let fpArmed = false;
+  let fpApplying = false;
 
   function uid() {
     return "t_" + Math.random().toString(36).slice(2, 10) + Date.now().toString(36).slice(-4);
@@ -59,6 +72,54 @@
       .replace(/>/g, "&gt;");
   }
 
+  function looksLikeHtml(s) {
+    const t = String(s || "").trim();
+    if (!t) return false;
+    if (t.charAt(0) !== "<") return false;
+    return /<\/?[a-z][\s\S]*>/i.test(t);
+  }
+
+  function stripHtml(html) {
+    const d = document.createElement("div");
+    d.innerHTML = html || "";
+    return (d.textContent || d.innerText || "").trim();
+  }
+
+  function mdToHtml(md) {
+    if (window.marked) return marked.parse(md || "", { breaks: true });
+    return `<p>${escapeHtml(md || "").replace(/\n/g, "<br>")}</p>`;
+  }
+
+  function bodyToHtml(body) {
+    if (!body) return "";
+    if (looksLikeHtml(body)) return body;
+    return mdToHtml(body);
+  }
+
+  function htmlToMarkdown(html) {
+    if (!html || html === "（空）") return "";
+    if (!looksLikeHtml(html)) return html;
+    try {
+      if (!turndownSvc && window.TurndownService) {
+        turndownSvc = new TurndownService({
+          headingStyle: "atx",
+          codeBlockStyle: "fenced",
+          bulletListMarker: "-",
+        });
+      }
+      if (turndownSvc) return turndownSvc.turndown(html);
+    } catch (err) {
+      console.warn(err);
+    }
+    return "```html\n" + html + "\n```";
+  }
+
+  function contentToHtml(content) {
+    if (!content || content === "（空）") return `<p class="ec-empty">（空）</p>`;
+    if (looksLikeHtml(content)) return content;
+    return mdToHtml(content);
+  }
+
   /* —— Storage (v2 + migrate v1) —— */
   function emptyStore() {
     return {
@@ -88,6 +149,18 @@
     return store;
   }
 
+  function migrateBodiesToHtml(store) {
+    let changed = false;
+    Object.keys(store.notes || {}).forEach((date) => {
+      const n = store.notes[date];
+      if (!n || !n.body) return;
+      if (looksLikeHtml(n.body)) return;
+      n.body = mdToHtml(n.body);
+      changed = true;
+    });
+    return changed;
+  }
+
   function loadStore() {
     try {
       const v2 = localStorage.getItem(STORAGE_KEY);
@@ -95,12 +168,14 @@
         const data = JSON.parse(v2);
         if (data && data.version === 2 && data.notes) {
           if (!Array.isArray(data.topics)) data.topics = [];
+          if (migrateBodiesToHtml(data)) saveStore(data);
           return data;
         }
       }
       const v1 = localStorage.getItem(LEGACY_KEY);
       if (v1) {
         const migrated = migrateLegacy(JSON.parse(v1));
+        migrateBodiesToHtml(migrated);
         saveStore(migrated);
         return migrated;
       }
@@ -467,7 +542,7 @@
     entries.forEach((e) => {
       const li = document.createElement("li");
       li.className = "topic-note-card";
-      const preview = (e.content || "").replace(/\s+/g, " ").slice(0, 80);
+      const preview = stripHtml(e.content || "").replace(/\s+/g, " ").slice(0, 80);
       li.innerHTML = `
         <button type="button" class="topic-note-btn" data-date="${escapeHtml(e.date)}">
           <span class="topic-note-date">${escapeHtml(formatDisplay(e.date))}</span>
@@ -519,7 +594,6 @@
     const box = $("#topicChips");
     if (!box || box.dataset.bound === "1") return;
     box.dataset.bound = "1";
-    // 事件委托：避免手机端重建 DOM 时点选“没反应”
     box.addEventListener(
       "pointerup",
       (e) => {
@@ -533,41 +607,361 @@
     );
   }
 
-  /* —— Editor —— */
-  function initEditor() {
-    easyMDE = new EasyMDE({
-      element: $("#noteBody"),
-      spellChecker: false,
-      status: false,
-      autofocus: false,
-      placeholder: "写点什么吧… 支持 Markdown",
-      minHeight: "200px",
-      toolbar: [
-        "bold",
-        "italic",
-        "heading",
-        "|",
-        "quote",
-        "unordered-list",
-        "ordered-list",
-        "|",
-        "link",
-        "code",
-        "|",
-        "preview",
-        "side-by-side",
-        "fullscreen",
-        "|",
-        "guide",
-      ],
-      renderingConfig: { singleLineBreaks: false },
+  /* —— Images (base64 for offline localStorage) —— */
+  function compressImageBlob(blob, maxW, quality) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(blob);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        let w = img.naturalWidth || img.width;
+        let h = img.naturalHeight || img.height;
+        if (w > maxW) {
+          h = Math.round((h * maxW) / w);
+          w = maxW;
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, w, h);
+        const keepPng = blob.type === "image/png" && blob.size < 400 * 1024 && w <= 800;
+        const mime = keepPng ? "image/png" : "image/jpeg";
+        const dataUrl = keepPng ? canvas.toDataURL(mime) : canvas.toDataURL(mime, quality);
+        resolve(dataUrl);
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(url);
+        reject(new Error("image load failed"));
+      };
+      img.src = url;
+    });
+  }
+
+  async function blobToDataUrl(blob) {
+    if (blob.size > IMG_WARN_BYTES) {
+      toast("图片较大，正在压缩…");
+    }
+    try {
+      return await compressImageBlob(blob, IMG_MAX_WIDTH, IMG_JPEG_QUALITY);
+    } catch {
+      return await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+      });
+    }
+  }
+
+  /* —— Format painter —— */
+  function captureFormats(ed) {
+    const formats = {
+      bold: ed.queryCommandState("Bold"),
+      italic: ed.queryCommandState("Italic"),
+      underline: ed.queryCommandState("Underline"),
+      strikethrough: ed.queryCommandState("Strikethrough"),
+      forecolor: ed.queryCommandValue("ForeColor") || "",
+      backcolor: ed.queryCommandValue("HiliteColor") || ed.queryCommandValue("BackColor") || "",
+      fontsize: ed.queryCommandValue("FontSize") || "",
+      fontname: ed.queryCommandValue("FontName") || "",
+    };
+    const node = ed.selection.getNode();
+    if (node) {
+      const block = ed.dom.getParent(node, "h1,h2,h3,h4,blockquote,pre,p,div,li");
+      if (block) {
+        const tag = block.nodeName.toLowerCase();
+        if (/^h[1-4]$/.test(tag)) formats.block = tag;
+        else if (tag === "blockquote") formats.block = "blockquote";
+      }
+    }
+    return formats;
+  }
+
+  function applyFormats(ed, formats) {
+    if (!formats || ed.selection.isCollapsed()) return;
+    fpApplying = true;
+    try {
+      ed.undoManager.transact(() => {
+        const syncToggle = (cmd, want) => {
+          const on = !!ed.queryCommandState(cmd);
+          if (want && !on) ed.execCommand(cmd);
+          if (!want && on) ed.execCommand(cmd);
+        };
+        syncToggle("Bold", !!formats.bold);
+        syncToggle("Italic", !!formats.italic);
+        syncToggle("Underline", !!formats.underline);
+        syncToggle("Strikethrough", !!formats.strikethrough);
+
+        if (formats.forecolor) ed.execCommand("ForeColor", false, formats.forecolor);
+        if (formats.backcolor) {
+          try {
+            ed.execCommand("HiliteColor", false, formats.backcolor);
+          } catch {
+            ed.execCommand("BackColor", false, formats.backcolor);
+          }
+        }
+        if (formats.fontsize) ed.execCommand("FontSize", false, formats.fontsize);
+        if (formats.fontname) ed.execCommand("FontName", false, formats.fontname);
+        if (formats.block) ed.execCommand("FormatBlock", false, formats.block);
+      });
+    } finally {
+      fpApplying = false;
+    }
+  }
+
+  function setFormatPainterUi(ed, on) {
+    try {
+      const btn = ed.editorContainer && ed.editorContainer.querySelector('button[data-mce-name="formatpainter"]');
+      if (btn) btn.classList.toggle("tox-tbtn--enabled", !!on);
+    } catch {
+      /* ignore */
+    }
+    document.body.classList.toggle("format-painter-on", !!on);
+  }
+
+  function armFormatPainter(ed, sticky) {
+    if (ed.selection.isCollapsed()) {
+      toast("请先选中带格式的文字");
+      return;
+    }
+    fpFormats = captureFormats(ed);
+    fpSticky = !!sticky;
+    fpArmed = true;
+    setFormatPainterUi(ed, true);
+    toast(sticky ? "格式刷：连续模式（再点关闭）" : "格式刷：点选文字应用");
+  }
+
+  function disarmFormatPainter(ed) {
+    fpArmed = false;
+    fpSticky = false;
+    fpFormats = null;
+    if (ed) setFormatPainterUi(ed, false);
+    document.body.classList.remove("format-painter-on");
+  }
+
+  function registerFormatPainter(ed) {
+    ed.ui.registry.addIcon(
+      "format-painter",
+      '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 17.5V20h3.5L17 10.5l-3.5-3.5L4 17.5z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M13.5 7l3.5 3.5 1.8-1.8a1.5 1.5 0 000-2.1l-1.4-1.4a1.5 1.5 0 00-2.1 0L13.5 7z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/><path d="M4 12h4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>'
+    );
+
+    ed.ui.registry.addToggleButton("formatpainter", {
+      icon: "format-painter",
+      tooltip: "格式刷（双击连续刷）",
+      onAction: () => {
+        if (fpArmed) {
+          disarmFormatPainter(ed);
+          toast("已取消格式刷");
+          return;
+        }
+        armFormatPainter(ed, false);
+      },
+      onSetup: (api) => {
+        const sync = () => api.setActive(fpArmed);
+        sync();
+        const timer = setInterval(sync, 200);
+        const el = api.element || null;
+        /* Double-click sticky via editor container */
+        const host = ed.editorContainer;
+        const onDbl = (e) => {
+          const btn = e.target.closest('button[data-mce-name="formatpainter"]');
+          if (!btn) return;
+          e.preventDefault();
+          e.stopPropagation();
+          armFormatPainter(ed, true);
+          api.setActive(true);
+        };
+        if (host) host.addEventListener("dblclick", onDbl);
+        return () => {
+          clearInterval(timer);
+          if (host) host.removeEventListener("dblclick", onDbl);
+        };
+      },
     });
 
-    easyMDE.codemirror.on("change", () => {
+    ed.on("mouseup keyup", () => {
+      if (!fpArmed || fpApplying || !fpFormats) return;
+      if (ed.selection.isCollapsed()) return;
+      applyFormats(ed, fpFormats);
       dirty = true;
       setStatus("未保存…");
       scheduleAutosave();
+      if (!fpSticky) disarmFormatPainter(ed);
     });
+  }
+
+  /* —— Editor (TinyMCE) —— */
+  function editorContentStyle() {
+    return `
+      body {
+        font-family: "Source Serif 4", "Noto Sans SC", Georgia, serif;
+        font-size: 17px;
+        line-height: 1.75;
+        color: #3D2A1F;
+        background: #FFFAF5;
+        margin: 12px 14px 20px;
+        letter-spacing: 0.01em;
+      }
+      h1,h2,h3 { font-family: Fraunces, "Source Serif 4", serif; color: #3D2A1F; font-weight: 600; line-height: 1.3; }
+      h1 { font-size: 1.45em; } h2 { font-size: 1.25em; } h3 { font-size: 1.1em; }
+      a { color: #C45C42; }
+      blockquote {
+        margin: 0.6em 0; padding: 0.35em 0.9em;
+        border-left: 3px solid #E8A87C; color: #6B4F3F;
+        background: rgba(232,168,124,0.12); border-radius: 0 8px 8px 0;
+      }
+      table { border-collapse: collapse; width: 100%; }
+      table td, table th { border: 1px solid #E8A87C; padding: 0.4em 0.55em; }
+      table th { background: rgba(232,168,124,0.22); }
+      img { max-width: 100%; height: auto; border-radius: 8px; }
+      code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.9em; }
+      pre { background: rgba(61,42,31,0.06); padding: 0.75em; border-radius: 8px; overflow: auto; }
+      ul, ol { padding-left: 1.35em; }
+      p { margin: 0.45em 0; }
+    `;
+  }
+
+  function calcEditorHeight() {
+    const sheet = $("#editorSheet");
+    const meta = sheet && sheet.querySelector(".sheet-meta");
+    const head = sheet && sheet.querySelector(".sheet-head");
+    const foot = sheet && sheet.querySelector(".sheet-foot");
+    const vh = window.innerHeight || 640;
+    const used =
+      (head ? head.offsetHeight : 56) +
+      (foot ? foot.offsetHeight : 64) +
+      (meta ? meta.offsetHeight : 120) +
+      36;
+    return Math.max(260, Math.min(vh - used, vh * 0.62));
+  }
+
+  function getEditorBody() {
+    if (!editor) return "";
+    return editor.getContent({ format: "html" }) || "";
+  }
+
+  function setEditorBody(html) {
+    if (!editor) return;
+    editor.setContent(html || "");
+  }
+
+  function destroyEditor() {
+    if (editor) {
+      try {
+        editor.remove();
+      } catch {
+        /* ignore */
+      }
+      editor = null;
+    }
+    editorReady = null;
+    disarmFormatPainter(null);
+  }
+
+  function initEditor() {
+    if (!window.tinymce) {
+      console.error("TinyMCE failed to load");
+      toast("编辑器加载失败，请检查网络");
+      return Promise.resolve(null);
+    }
+    if (editor) return Promise.resolve(editor);
+    if (editorReady) return editorReady;
+
+    editorReady = new Promise((resolve) => {
+      tinymce.init({
+        selector: "#noteBody",
+        license_key: "gpl",
+        base_url: TINYMCE_BASE,
+        suffix: ".min",
+        language: "zh_CN",
+        language_url: "https://cdn.jsdelivr.net/npm/tinymce-i18n@25.1.1/langs7/zh_CN.js",
+        promotion: false,
+        branding: false,
+        statusbar: false,
+        menubar: false,
+        resize: false,
+        min_height: 240,
+        height: calcEditorHeight(),
+        plugins: "lists link image table code fullscreen searchreplace emoticons",
+        toolbar:
+          "undo redo | blocks | bold italic underline strikethrough | forecolor backcolor | formatpainter | bullist numlist | link image emoticons table | removeformat | searchreplace code fullscreen",
+        toolbar_mode: "sliding",
+        toolbar_sticky: true,
+        contextmenu: "link image table",
+        paste_data_images: true,
+        automatic_uploads: true,
+        images_reuse_filename: true,
+        image_title: true,
+        image_description: false,
+        object_resizing: true,
+        table_toolbar:
+          "tableprops tabledelete | tableinsertrowbefore tableinsertrowafter tabledeleterow | tableinsertcolbefore tableinsertcolafter tabledeletecol",
+        content_style: editorContentStyle(),
+        content_css: false,
+        skin: "oxide",
+        skin_url: TINYMCE_BASE + "/skins/ui/oxide",
+        content_css_cors: true,
+        placeholder: "写点什么吧… 支持颜色、高亮、表格与图片",
+        font_size_formats: "12px 14px 16px 18px 20px 24px 28px",
+        block_formats: "段落=p; 标题 1=h1; 标题 2=h2; 标题 3=h3; 引用=blockquote",
+        link_default_target: "_blank",
+        link_assume_external_targets: true,
+        mobile: {
+          toolbar_mode: "sliding",
+        },
+        images_upload_handler: (blobInfo) =>
+          blobToDataUrl(blobInfo.blob()).then((dataUrl) => dataUrl),
+        file_picker_types: "image",
+        file_picker_callback: (callback, _value, meta) => {
+          if (meta.filetype !== "image") return;
+          const input = document.createElement("input");
+          input.type = "file";
+          input.accept = "image/*";
+          input.onchange = async () => {
+            const file = input.files && input.files[0];
+            if (!file) return;
+            try {
+              const dataUrl = await blobToDataUrl(file);
+              callback(dataUrl, { title: file.name || "图片" });
+            } catch {
+              toast("图片插入失败");
+            }
+          };
+          input.click();
+        },
+        setup: (ed) => {
+          registerFormatPainter(ed);
+          ed.on("init", () => {
+            editor = ed;
+            resolve(ed);
+          });
+          ed.on("change input undo redo SetContent", () => {
+            if (fpApplying) return;
+            dirty = true;
+            setStatus("未保存…");
+            scheduleAutosave();
+          });
+          ed.on("drop", (e) => {
+            const files = e.dataTransfer && e.dataTransfer.files;
+            if (!files || !files.length) return;
+            const imgs = [...files].filter((f) => /^image\//.test(f.type));
+            if (!imgs.length) return;
+            e.preventDefault();
+            imgs.forEach(async (file) => {
+              try {
+                const dataUrl = await blobToDataUrl(file);
+                ed.insertContent('<img src="' + dataUrl + '" alt="" />');
+              } catch {
+                toast("图片插入失败");
+              }
+            });
+          });
+        },
+      });
+    });
+
+    return editorReady;
   }
 
   function setStatus(text) {
@@ -582,10 +976,10 @@
   }
 
   function persistCurrent(silent) {
-    if (!activeDate || !easyMDE) return;
+    if (!activeDate || !editor) return;
     setNote(activeDate, {
       title: $("#noteTitle").value,
-      body: easyMDE.value(),
+      body: getEditorBody(),
       topicIds: selectedTopicIds.slice(),
     });
     dirty = false;
@@ -601,7 +995,33 @@
     return `${pad(n.getHours())}:${pad(n.getMinutes())}`;
   }
 
-  function openEditor(dateKey) {
+  function resizeEditorToSheet() {
+    if (!editor) return;
+    const h = calcEditorHeight();
+    const container = editor.getContainer();
+    if (container) {
+      container.style.height = h + "px";
+      container.style.maxHeight = h + "px";
+    }
+    try {
+      if (editor.theme && typeof editor.theme.resizeTo === "function") {
+        editor.theme.resizeTo(null, h);
+      }
+    } catch {
+      /* ignore */
+    }
+    try {
+      const header = container && container.querySelector(".tox-editor-header");
+      const headerH = header ? header.offsetHeight : 48;
+      if (editor.iframeElement) {
+        editor.iframeElement.style.height = Math.max(160, h - headerH - 2) + "px";
+      }
+    } catch {
+      /* ignore */
+    }
+  }
+
+  async function openEditor(dateKey) {
     activeDate = dateKey;
     const note = getNote(dateKey);
     selectedTopicIds = note.topicIds.slice();
@@ -611,7 +1031,6 @@
     $("#sheetWeekday").textContent = WEEKDAYS_FULL[wd];
     $("#sheetDate").textContent = formatDisplay(dateKey);
     $("#noteTitle").value = note.title || "";
-    easyMDE.value(note.body || "");
     dirty = false;
     setStatus(hasNote(dateKey) ? "已加载" : "新的一天");
     renderTopicChips();
@@ -626,24 +1045,36 @@
       sheet.classList.add("open");
     });
 
-    setTimeout(() => {
-      easyMDE.codemirror.refresh();
-      $("#noteTitle").focus();
-    }, 380);
+    try {
+      await initEditor();
+      if (!editor) return;
+      setEditorBody(bodyToHtml(note.body || ""));
+      dirty = false;
+      setTimeout(() => {
+        resizeEditorToSheet();
+        $("#noteTitle").focus();
+      }, 380);
+    } catch (err) {
+      console.error(err);
+      toast("编辑器打开失败");
+    }
   }
 
   function closeEditor() {
     if (dirty) persistCurrent(true);
+    if (editor) disarmFormatPainter(editor);
     const overlay = $("#overlay");
     const sheet = $("#editorSheet");
     overlay.classList.remove("open");
     sheet.classList.remove("open");
     document.body.classList.remove("sheet-open");
+    document.body.classList.remove("format-painter-on");
     setTimeout(() => {
       overlay.hidden = true;
       sheet.hidden = true;
       activeDate = null;
       selectedTopicIds = [];
+      destroyEditor();
       if (viewMode === "topic-detail") renderTopicDetail();
       if (viewMode === "topics") renderTopicList();
     }, 400);
@@ -664,12 +1095,6 @@
 
   function downloadText(text, filename, mime) {
     downloadBlob(new Blob([text], { type: mime || "text/plain;charset=utf-8" }), filename);
-  }
-
-  function mdToHtml(md) {
-    if (window.marked) return marked.parse(md || "", { breaks: true });
-    if (easyMDE && typeof easyMDE.markdown === "function") return easyMDE.markdown(md || "");
-    return `<pre>${escapeHtml(md || "")}</pre>`;
   }
 
   function getSortedNotes(ascending) {
@@ -726,7 +1151,8 @@
     if (entry.title) lines.push("", `### ${entry.title}`);
     const tags = topicNamesForEntry(entry);
     if (tags.length) lines.push("", `> 学习线：${tags.join(" · ")}`);
-    lines.push("", entry.content || "（空）", "");
+    const mdBody = htmlToMarkdown(entry.content || "");
+    lines.push("", mdBody || "（空）", "");
     return lines.join("\n");
   }
 
@@ -747,10 +1173,7 @@
     const tagHtml = tags.length
       ? `<p class="ec-tags">${tags.map((t) => escapeHtml(t)).join(" · ")}</p>`
       : "";
-    const body =
-      entry.content && entry.content !== "（空）"
-        ? mdToHtml(entry.content)
-        : `<p class="ec-empty">（空）</p>`;
+    const body = contentToHtml(entry.content);
     return `
       <article class="ec-block">
         <h1 class="ec-date">${heading}</h1>
@@ -870,6 +1293,9 @@ h2{font-size:14pt;margin:0.4em 0}
 .ec-brand{color:#C45C42;letter-spacing:0.08em}
 .ec-sep{border:none;border-top:1px solid #E8A87C;margin:1.5em 0}
 .ec-tags{color:#8B5E4B;font-size:11pt}
+img{max-width:100%;height:auto}
+table{border-collapse:collapse;width:100%}
+td,th{border:1px solid #E8A87C;padding:4px 8px}
 </style></head><body>${card.innerHTML}</body></html>`;
     card.innerHTML = "";
     if (!window.htmlDocx || !htmlDocx.asBlob) {
@@ -1078,33 +1504,21 @@ h2{font-size:14pt;margin:0.4em 0}
     });
     $("#backToTopics").addEventListener("click", () => setMode("topics"));
     $("#renameTopicBtn").addEventListener("click", () => {
-      const topic = findTopic(activeTopicId);
-      if (!topic) return;
-      const name = window.prompt("重命名主题", topic.name);
-      if (name === null) return;
-      if (renameTopic(activeTopicId, name)) {
-        toast("已重命名");
-        renderTopicDetail();
-        renderTopicChips();
-      }
+      if (!activeTopicId) return;
+      promptRenameTopic(activeTopicId);
     });
     $("#deleteTopicBtn").addEventListener("click", () => {
-      const topic = findTopic(activeTopicId);
-      if (!topic) return;
-      if (!window.confirm(`删除学习线「${topic.name}」？\n日记内容仍保留，只是去掉此标签。`)) return;
-      deleteTopic(activeTopicId);
-      activeTopicId = null;
-      toast("已删除主题");
-      setMode("topics");
-      renderTopicChips();
+      if (!activeTopicId) return;
+      promptDeleteTopic(activeTopicId);
     });
 
     $("#insertTemplate").addEventListener("click", () => {
-      if (!easyMDE) return;
-      const cur = easyMDE.value();
-      easyMDE.value(cur ? cur + "\n\n" + TEMPLATE_MD : TEMPLATE_MD);
+      if (!editor) return;
+      const cur = getEditorBody().trim();
+      setEditorBody(cur ? cur + TEMPLATE_HTML : TEMPLATE_HTML);
       dirty = true;
       setStatus("未保存…");
+      scheduleAutosave();
       toast("已插入模板");
     });
 
@@ -1127,6 +1541,12 @@ h2{font-size:14pt;margin:0.4em 0}
 
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && !$("#editorSheet").hidden) {
+        if (fpArmed && editor) {
+          e.preventDefault();
+          disarmFormatPainter(editor);
+          toast("已取消格式刷");
+          return;
+        }
         e.preventDefault();
         closeEditor();
       }
@@ -1166,7 +1586,12 @@ h2{font-size:14pt;margin:0.4em 0}
     let resizeTimer;
     window.addEventListener("resize", () => {
       clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(() => setMode(viewMode), 120);
+      resizeTimer = setTimeout(() => {
+        setMode(viewMode);
+        if (editor && activeDate && !$("#editorSheet").hidden) {
+          resizeEditorToSheet();
+        }
+      }, 120);
     });
   }
 
@@ -1176,9 +1601,9 @@ h2{font-size:14pt;margin:0.4em 0}
     viewYear = t.getFullYear();
     viewMonth = t.getMonth();
     initWeekdays();
-    initEditor();
     setMode("calendar");
     bind();
+    /* Lazy-init TinyMCE on first open for faster first paint */
   }
 
   if (document.readyState === "loading") {

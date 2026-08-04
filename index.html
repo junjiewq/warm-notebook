@@ -9,8 +9,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Noto+Sans+SC:wght@400;500;600&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.css" />
-  <link rel="stylesheet" href="app.css?v=20260804c" />
+  <link rel="stylesheet" href="app.css?v=20260805a" />
 </head>
 <body>
   <div class="paper-bg" aria-hidden="true"></div>
@@ -104,24 +103,26 @@
       <button type="button" class="icon-btn" id="closeSheet" aria-label="关闭">✕</button>
     </header>
     <div class="sheet-body">
-      <label class="field">
-        <span class="field-label">标题（可选）</span>
-        <input type="text" id="noteTitle" placeholder="给这一天起个名字…" maxlength="120" autocomplete="off" />
-      </label>
+      <div class="sheet-meta">
+        <label class="field">
+          <span class="field-label">标题（可选）</span>
+          <input type="text" id="noteTitle" placeholder="给这一天起个名字…" maxlength="120" autocomplete="off" />
+        </label>
 
-      <div class="field">
-        <div class="field-label-row">
-          <span class="field-label">学习线（可多选）</span>
-          <button type="button" class="text-btn tiny" id="sheetAddTopic">＋ 新主题</button>
+        <div class="field">
+          <div class="field-label-row">
+            <span class="field-label">学习线（可多选）</span>
+            <button type="button" class="text-btn tiny" id="sheetAddTopic">＋ 新主题</button>
+          </div>
+          <div class="topic-chips" id="topicChips" role="group" aria-label="选择主题"></div>
         </div>
-        <div class="topic-chips" id="topicChips" role="group" aria-label="选择主题"></div>
-      </div>
 
-      <details class="template-hint">
-        <summary>可选模板提示</summary>
-        <p class="template-lines">目标 · 学到了 · 主题 · 疑问</p>
-        <button type="button" class="text-btn tiny" id="insertTemplate">插入到正文</button>
-      </details>
+        <details class="template-hint">
+          <summary>可选模板提示</summary>
+          <p class="template-lines">目标 · 学到了 · 主题 · 疑问</p>
+          <button type="button" class="text-btn tiny" id="insertTemplate">插入到正文</button>
+        </details>
+      </div>
 
       <div class="editor-wrap">
         <textarea id="noteBody"></textarea>
@@ -144,12 +145,13 @@
   <div id="exportCard" class="export-card" aria-hidden="true"></div>
   <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
 
-  <script src="https://cdn.jsdelivr.net/npm/easymde@2.18.0/dist/easymde.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tinymce@7.6.1/tinymce.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/turndown@7.2.0/dist/turndown.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/html2pdf.js@0.10.1/dist/html2pdf.bundle.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/file-saver@2.0.5/dist/FileSaver.min.js"></script>
   <script src="https://unpkg.com/html-docx-js@0.3.1/dist/html-docx.js"></script>
-  <script src="app.js?v=20260804b"></script>
+  <script src="app.js?v=20260805a"></script>
 </body>
 </html>
