@@ -1190,7 +1190,8 @@
       }
       h1,h2,h3 { font-family: Fraunces, "Source Serif 4", serif; color: #3D2A1F; font-weight: 600; line-height: 1.3; }
       h1 { font-size: 1.45em; } h2 { font-size: 1.25em; } h3 { font-size: 1.1em; }
-      a { color: #C45C42; }
+      a { color: #C45C42; text-decoration: underline; cursor: text; }
+      a[href]:hover { color: #9a3f2c; }
       blockquote {
         margin: 0.6em 0; padding: 0.35em 0.9em;
         border-left: 3px solid #E8A87C; color: #6B4F3F;
@@ -1269,13 +1270,19 @@
         resize: false,
         min_height: 240,
         height: calcEditorHeight(),
-        plugins: "lists link image table code fullscreen searchreplace emoticons",
+        plugins: "lists link autolink image table code fullscreen searchreplace emoticons",
         toolbar:
-          "undo redo | blocks | bold italic underline strikethrough | forecolor backcolor | formatpainter | bullist numlist | link image emoticons table | removeformat | searchreplace code fullscreen",
+          "undo redo | blocks | bold italic underline strikethrough | forecolor backcolor | formatpainter | bullist numlist | link unlink | image emoticons table | removeformat | searchreplace code fullscreen",
         toolbar_mode: "sliding",
         toolbar_sticky: true,
-        contextmenu: "link image table",
-        paste_data_images: false,
+        contextmenu: "link unlink openlink image table",
+        link_default_target: "_blank",
+        link_default_protocol: "https",
+        link_assume_external_targets: false,
+        link_context_toolbar: true,
+        link_title: false,
+        rel_list: [{ title: "No Referrer", value: "noopener noreferrer" }],
+        default_link_target: "_blank",
         paste_filter_drop: false,
         paste_webkit_styles: "color font-size font-weight background-color",
         paste_merge_formats: true,
@@ -1295,8 +1302,7 @@
         placeholder: "写点什么吧… 插图请用截图粘贴或工具栏「图片」；从网页复制只保留文字和链接",
         font_size_formats: "12px 14px 16px 18px 20px 24px 28px",
         block_formats: "段落=p; 标题 1=h1; 标题 2=h2; 标题 3=h3; 引用=blockquote",
-        link_default_target: "_blank",
-        link_assume_external_targets: true,
+        paste_data_images: false,
         mobile: {
           toolbar_mode: "sliding",
         },
@@ -1334,7 +1340,43 @@
           bindEditorImagePaste(ed);
           ed.on("init", () => {
             editor = ed;
+            // 编辑时单击链接不跳转；Ctrl/Cmd+单击才打开
+            try {
+              const doc = ed.getDoc();
+              if (doc) {
+                doc.addEventListener(
+                  "click",
+                  (ev) => {
+                    const a = ev.target && ev.target.closest && ev.target.closest("a[href]");
+                    if (!a) return;
+                    if (ev.metaKey || ev.ctrlKey) {
+                      window.open(a.href, "_blank", "noopener,noreferrer");
+                    }
+                    ev.preventDefault();
+                    ev.stopPropagation();
+                    // 选中链接方便点工具栏编辑
+                    try {
+                      ed.selection.select(a);
+                    } catch {
+                      /* ignore */
+                    }
+                  },
+                  true
+                );
+              }
+            } catch {
+              /* ignore */
+            }
             resolve(ed);
+          });
+          ed.on("ExecCommand", (e) => {
+            // 纠正误加的 http://https://
+            if (e.command === "mceInsertLink" || e.command === "createlink") {
+              setTimeout(() => normalizeEditorLinks(ed), 0);
+            }
+          });
+          ed.on("change SetContent", () => {
+            setTimeout(() => normalizeEditorLinks(ed), 0);
           });
           ed.on("change input undo redo SetContent", () => {
             if (fpApplying) return;
@@ -1362,6 +1404,33 @@
     });
 
     return editorReady;
+  }
+
+  function normalizeEditorLinks(ed) {
+    if (!ed || ed.removed) return;
+    let body;
+    try {
+      body = ed.getBody();
+    } catch {
+      return;
+    }
+    if (!body) return;
+    body.querySelectorAll("a[href]").forEach((a) => {
+      let href = (a.getAttribute("href") || "").trim();
+      if (!href) return;
+      // 修复 http://https://xxx
+      href = href.replace(/^https?:\/\/(?=https?:\/\/)/i, "");
+      // 纯域名补协议
+      if (/^[\w.-]+\.[a-z]{2,}([\/?#].*)?$/i.test(href)) {
+        href = "https://" + href;
+      }
+      if (href !== a.getAttribute("href")) {
+        a.setAttribute("href", href);
+        dirty = true;
+      }
+      if (!a.getAttribute("target")) a.setAttribute("target", "_blank");
+      if (!a.getAttribute("rel")) a.setAttribute("rel", "noopener noreferrer");
+    });
   }
 
   function setStatus(text) {
