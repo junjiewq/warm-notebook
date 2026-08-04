@@ -704,37 +704,99 @@
     }
   }
 
+  function isBrokenImageSrc(src) {
+    const s = (src || "").trim();
+    if (!s) return true;
+    if (s.startsWith("data:image/")) return false;
+    if (/^https?:\/\//i.test(s)) return false;
+    if (s.startsWith("blob:")) return false; // handle separately
+    // file: / relative / bare filenames like image.png
+    if (/^file:/i.test(s)) return true;
+    if (/^image\.(png|jpe?g|gif|webp)$/i.test(s)) return true;
+    if (/^[^/]+\.(png|jpe?g|gif|webp|bmp)$/i.test(s)) return true;
+    if (s.startsWith("./") || s.startsWith("../")) return true;
+    return false;
+  }
+
+  function sanitizePastedHtml(html) {
+    try {
+      const doc = new DOMParser().parseFromString(String(html || ""), "text/html");
+      doc.querySelectorAll("img").forEach((img) => {
+        const src = img.getAttribute("src") || "";
+        if (isBrokenImageSrc(src) || !src) img.remove();
+        else {
+          img.style.maxWidth = "100%";
+          img.style.width = "auto";
+          img.style.height = "auto";
+          img.style.display = "inline-block";
+        }
+      });
+      return doc.body ? doc.body.innerHTML : html;
+    } catch {
+      return html;
+    }
+  }
+
   function bindEditorImagePaste(ed) {
     const onPaste = (e) => {
       const cd = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
+      if (!cd) return;
       const imgs = collectClipboardImages(cd);
-      if (!imgs.length) return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
-      toast("正在粘贴图片…");
-      (async () => {
-        let ok = 0;
-        for (const file of imgs) {
-          if (await insertImageFromBlob(ed, file, file.name || "粘贴图片")) ok += 1;
+      if (imgs.length) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+        toast("正在粘贴图片…");
+        (async () => {
+          let ok = 0;
+          for (const file of imgs) {
+            if (await insertImageFromBlob(ed, file, file.name || "粘贴图片")) ok += 1;
+          }
+          // 清掉可能残留的无效占位
+          await repairEditorImages(ed);
+          toast(ok ? `已粘贴 ${ok} 张图片` : "图片粘贴失败，请用工具栏「图片」按钮");
+        })();
+        return;
+      }
+      // 无文件时：若 HTML 里只有裂图，直接拦住并提示
+      try {
+        const html = cd.getData("text/html") || "";
+        if (html && /<img\b/i.test(html)) {
+          const tmp = document.createElement("div");
+          tmp.innerHTML = html;
+          const all = [...tmp.querySelectorAll("img")];
+          const broken = all.filter((img) => isBrokenImageSrc(img.getAttribute("src") || ""));
+          if (all.length && broken.length === all.length) {
+            e.preventDefault();
+            e.stopPropagation();
+            toast("剪贴板图片无效，请用截图粘贴或点工具栏插入图片");
+          }
         }
-        toast(ok ? `已粘贴 ${ok} 张图片` : "图片粘贴失败");
-      })();
+      } catch {
+        /* ignore */
+      }
     };
 
     ed.on("paste", onPaste);
+    ed.on("PastePreProcess", (e) => {
+      if (e && typeof e.content === "string") {
+        e.content = sanitizePastedHtml(e.content);
+      }
+    });
     ed.on("PastePostProcess", (e) => {
-      // 清理失败的占位图 / 把 blob: 转成 data URL
-      setTimeout(() => repairEditorImages(ed), 0);
-      if (e && e.node) {
-        e.node.querySelectorAll &&
-          e.node.querySelectorAll("img").forEach((img) => {
+      if (e && e.node && e.node.querySelectorAll) {
+        e.node.querySelectorAll("img").forEach((img) => {
+          const src = img.getAttribute("src") || "";
+          if (isBrokenImageSrc(src)) img.remove();
+          else {
             img.style.maxWidth = "100%";
             img.style.width = "auto";
             img.style.height = "auto";
             img.style.display = "inline-block";
-          });
+          }
+        });
       }
+      setTimeout(() => repairEditorImages(ed), 0);
     });
     ed.on("init", () => {
       try {
@@ -762,16 +824,19 @@
     }
     if (!body) return;
     const imgs = [...body.querySelectorAll("img")];
+    let removed = 0;
     for (const img of imgs) {
       img.style.maxWidth = "100%";
       img.style.width = "auto";
       img.style.height = "auto";
       img.style.display = "inline-block";
-      const src = img.getAttribute("src") || "";
-      if (src.startsWith("data:")) continue;
+      const src = (img.getAttribute("src") || "").trim();
+      if (src.startsWith("data:image/")) continue;
+
       if (src.startsWith("blob:")) {
         try {
           const blob = await fetch(src).then((r) => r.blob());
+          if (!blob || blob.size < 8) throw new Error("empty blob");
           const dataUrl = await blobToDataUrl(blob);
           img.setAttribute("src", dataUrl);
           img.removeAttribute("data-mce-src");
@@ -779,23 +844,41 @@
           dirty = true;
           continue;
         } catch {
-          /* fall through remove */
-        }
-      }
-      // 裂图占位（如 image.png / 空 src / file:）
-      if (
-        !src ||
-        src === "image.png" ||
-        /\.(png|jpe?g|gif|webp|bmp)$/i.test(src) && !/^https?:/i.test(src) && !src.startsWith("data:")
-      ) {
-        const alt = img.getAttribute("alt") || "";
-        // 仅移除明显损坏的本地文件名占位，保留正常 http(s) 图
-        if (!/^https?:/i.test(src)) {
           img.remove();
+          removed += 1;
           dirty = true;
-          if (alt) toast("已移除无效图片占位");
+          continue;
         }
       }
+
+      if (isBrokenImageSrc(src)) {
+        img.remove();
+        removed += 1;
+        dirty = true;
+        continue;
+      }
+
+      // http(s)：尝试转成 data URL 方便离线；失败则保留原链接
+      if (/^https?:\/\//i.test(src) && img.getAttribute("data-warm-img") !== "1") {
+        try {
+          const blob = await fetch(src, { mode: "cors" }).then((r) => {
+            if (!r.ok) throw new Error("fetch fail");
+            return r.blob();
+          });
+          if (blob && /^image\//.test(blob.type || "image/png")) {
+            const dataUrl = await blobToDataUrl(blob);
+            img.setAttribute("src", dataUrl);
+            img.setAttribute("data-warm-img", "1");
+            dirty = true;
+          }
+        } catch {
+          /* 外链保留，能显示就行 */
+        }
+      }
+    }
+    if (removed && activeDate) {
+      setStatus("未保存…");
+      scheduleAutosave();
     }
   }
 
@@ -1036,7 +1119,10 @@
         toolbar_sticky: true,
         contextmenu: "link image table",
         paste_data_images: false,
-        paste_block_drop: false,
+        paste_filter_drop: false,
+        paste_webkit_styles: "color font-size font-weight background-color",
+        paste_merge_formats: true,
+        paste_remove_styles_if_webkit: false,
         automatic_uploads: true,
         images_reuse_filename: true,
         image_title: true,
