@@ -821,39 +821,14 @@
   function bindBrokenImageGuard(ed) {
     if (!ed || ed._warmImgGuard) return;
     ed._warmImgGuard = true;
-    // 不再用 MutationObserver / input 监听清空段落——会吞掉回车换行
+    // 不做 MutationObserver / 不做拦截 Enter（会破坏换行）
     ed.on("SetContent", () => {
       setTimeout(() => {
         scrubEditorJunk(ed, { aggressive: false });
         repairEditorImages(ed);
         unwrapZeroLineHeight(ed);
+        ensureEditableTail(ed);
       }, 0);
-    });
-    ed.on("keydown", (e) => {
-      // 在超链接内部按回车：先跳出链接再换行，避免“按了没反应”
-      if (e.key !== "Enter" || e.shiftKey || e.altKey || e.metaKey || e.ctrlKey) return;
-      const node = ed.selection.getNode();
-      const a = ed.dom.getParent(node, "a");
-      if (!a) return;
-      e.preventDefault();
-      e.stopPropagation();
-      try {
-        // 在链接后插入新段落
-        const rng = ed.dom.createRng();
-        rng.setStartAfter(a);
-        rng.setEndAfter(a);
-        ed.selection.setRng(rng);
-        ed.insertContent("<p><br data-mce-bogus=\"1\"></p>");
-        // 把光标放到新段落
-        const p = a.nextSibling;
-        if (p) ed.selection.setCursorLocation(p, 0);
-      } catch (err) {
-        console.error(err);
-        ed.execCommand("mceInsertNewLine");
-      }
-      dirty = true;
-      setStatus("未保存…");
-      scheduleAutosave();
     });
   }
 
@@ -867,6 +842,37 @@
       });
     } catch {
       /* ignore */
+    }
+  }
+
+  /** 正文末尾保证有一个空段落，方便在链接后继续打字换行 */
+  function ensureEditableTail(ed) {
+    if (!ed || ed.removed) return;
+    let body;
+    try {
+      body = ed.getBody();
+    } catch {
+      return;
+    }
+    if (!body) return;
+    const last = body.lastElementChild;
+    if (!last) {
+      body.innerHTML = "<p><br></p>";
+      return;
+    }
+    const onlyLink =
+      last.childNodes.length &&
+      [...last.childNodes].every(
+        (n) =>
+          (n.nodeType === 1 && (n.tagName === "A" || n.tagName === "BR")) ||
+          (n.nodeType === 3 && !(n.nodeValue || "").trim())
+      ) &&
+      last.querySelector("a[href]");
+    const text = (last.textContent || "").replace(/\u00a0/g, " ").trim();
+    if (onlyLink || (last.querySelector("a[href]") && text && !last.querySelector("a[href]").nextSibling)) {
+      const p = ed.getDoc().createElement("p");
+      p.innerHTML = "<br>";
+      body.appendChild(p);
     }
   }
 
@@ -1374,12 +1380,23 @@
                     if (!a) return;
                     if (ev.metaKey || ev.ctrlKey) {
                       window.open(a.href, "_blank", "noopener,noreferrer");
+                      ev.preventDefault();
+                      ev.stopPropagation();
+                      return;
                     }
+                    // 单击：不跳转、不整段选中（否则回车会像“删掉/没换行”）
                     ev.preventDefault();
                     ev.stopPropagation();
-                    // 选中链接方便点工具栏编辑
                     try {
-                      ed.selection.select(a);
+                      if (typeof ed.selection.placeCaretAt === "function") {
+                        ed.selection.placeCaretAt(ev.clientX, ev.clientY);
+                      } else {
+                        const rng = ed.dom.createRng();
+                        rng.selectNodeContents(a);
+                        rng.collapse(false); // 光标到链接末尾
+                        ed.selection.setRng(rng);
+                      }
+                      ed.focus();
                     } catch {
                       /* ignore */
                     }
