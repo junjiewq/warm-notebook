@@ -692,7 +692,7 @@
       const safeAlt = escapeHtml(alt || "图片");
       ed.focus();
       ed.insertContent(
-        `<p><img src="${dataUrl}" alt="${safeAlt}" style="max-width:100%;height:auto;display:block;margin:0.5em 0;" /></p>`
+        `<p style="margin:0.6em 0;line-height:0;"><img src="${dataUrl}" alt="${safeAlt}" data-warm-img="1" style="max-width:100%;width:auto;height:auto;display:inline-block;border-radius:8px;" /></p>`
       );
       dirty = true;
       setStatus("未保存…");
@@ -723,6 +723,19 @@
     };
 
     ed.on("paste", onPaste);
+    ed.on("PastePostProcess", (e) => {
+      // 清理失败的占位图 / 把 blob: 转成 data URL
+      setTimeout(() => repairEditorImages(ed), 0);
+      if (e && e.node) {
+        e.node.querySelectorAll &&
+          e.node.querySelectorAll("img").forEach((img) => {
+            img.style.maxWidth = "100%";
+            img.style.width = "auto";
+            img.style.height = "auto";
+            img.style.display = "inline-block";
+          });
+      }
+    });
     ed.on("init", () => {
       try {
         const doc = ed.getDoc();
@@ -732,7 +745,58 @@
       } catch {
         /* ignore */
       }
+      setTimeout(() => repairEditorImages(ed), 50);
     });
+    ed.on("SetContent", () => {
+      setTimeout(() => repairEditorImages(ed), 0);
+    });
+  }
+
+  async function repairEditorImages(ed) {
+    if (!ed || ed.removed) return;
+    let body;
+    try {
+      body = ed.getBody();
+    } catch {
+      return;
+    }
+    if (!body) return;
+    const imgs = [...body.querySelectorAll("img")];
+    for (const img of imgs) {
+      img.style.maxWidth = "100%";
+      img.style.width = "auto";
+      img.style.height = "auto";
+      img.style.display = "inline-block";
+      const src = img.getAttribute("src") || "";
+      if (src.startsWith("data:")) continue;
+      if (src.startsWith("blob:")) {
+        try {
+          const blob = await fetch(src).then((r) => r.blob());
+          const dataUrl = await blobToDataUrl(blob);
+          img.setAttribute("src", dataUrl);
+          img.removeAttribute("data-mce-src");
+          img.setAttribute("data-warm-img", "1");
+          dirty = true;
+          continue;
+        } catch {
+          /* fall through remove */
+        }
+      }
+      // 裂图占位（如 image.png / 空 src / file:）
+      if (
+        !src ||
+        src === "image.png" ||
+        /\.(png|jpe?g|gif|webp|bmp)$/i.test(src) && !/^https?:/i.test(src) && !src.startsWith("data:")
+      ) {
+        const alt = img.getAttribute("alt") || "";
+        // 仅移除明显损坏的本地文件名占位，保留正常 http(s) 图
+        if (!/^https?:/i.test(src)) {
+          img.remove();
+          dirty = true;
+          if (alt) toast("已移除无效图片占位");
+        }
+      }
+    }
   }
 
   /* —— Format painter —— */
