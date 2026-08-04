@@ -608,27 +608,53 @@
   }
 
   /* —— Images (base64 for offline localStorage) —— */
+  // warm-img-paste-v20260805o: scrub 不得因空 data-mce-src / alt=image.png 删掉有效图
+  function readFileAsDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.onerror = () => reject(reader.error || new Error("FileReader failed"));
+      reader.readAsDataURL(blob);
+    });
+  }
+
   function compressImageBlob(blob, maxW, quality) {
     return new Promise((resolve, reject) => {
       const url = URL.createObjectURL(blob);
       const img = new Image();
       img.onload = () => {
-        URL.revokeObjectURL(url);
-        let w = img.naturalWidth || img.width;
-        let h = img.naturalHeight || img.height;
-        if (w > maxW) {
-          h = Math.round((h * maxW) / w);
-          w = maxW;
+        try {
+          URL.revokeObjectURL(url);
+          let w = img.naturalWidth || img.width;
+          let h = img.naturalHeight || img.height;
+          if (!w || !h) {
+            reject(new Error("image has no dimensions"));
+            return;
+          }
+          if (w > maxW) {
+            h = Math.round((h * maxW) / w);
+            w = maxW;
+          }
+          const canvas = document.createElement("canvas");
+          canvas.width = w;
+          canvas.height = h;
+          const ctx = canvas.getContext("2d");
+          if (!ctx) {
+            reject(new Error("canvas unsupported"));
+            return;
+          }
+          ctx.drawImage(img, 0, 0, w, h);
+          const keepPng = blob.type === "image/png" && blob.size < 400 * 1024 && w <= 800;
+          const mime = keepPng ? "image/png" : "image/jpeg";
+          const dataUrl = keepPng ? canvas.toDataURL(mime) : canvas.toDataURL(mime, quality);
+          if (!dataUrl || !dataUrl.startsWith("data:image/")) {
+            reject(new Error("toDataURL failed"));
+            return;
+          }
+          resolve(dataUrl);
+        } catch (err) {
+          reject(err);
         }
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        ctx.drawImage(img, 0, 0, w, h);
-        const keepPng = blob.type === "image/png" && blob.size < 400 * 1024 && w <= 800;
-        const mime = keepPng ? "image/png" : "image/jpeg";
-        const dataUrl = keepPng ? canvas.toDataURL(mime) : canvas.toDataURL(mime, quality);
-        resolve(dataUrl);
       };
       img.onerror = () => {
         URL.revokeObjectURL(url);
@@ -645,13 +671,9 @@
     }
     try {
       return await compressImageBlob(blob, IMG_MAX_WIDTH, IMG_JPEG_QUALITY);
-    } catch {
-      return await new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(reader.result);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-      });
+    } catch (err) {
+      console.warn("compressImageBlob fallback", err);
+      return await readFileAsDataUrl(blob);
     }
   }
 
@@ -673,8 +695,15 @@
         for (let i = 0; i < dataTransfer.items.length; i++) {
           const item = dataTransfer.items[i];
           if (!item) continue;
-          if (item.kind === "file" && (!item.type || /^image\//i.test(item.type))) {
-            push(item.getAsFile());
+          const type = item.type || "";
+          // kind=file，或 type=image/*（Chrome/Safari 截图）
+          if (item.kind === "file" || /^image\//i.test(type)) {
+            try {
+              const f = typeof item.getAsFile === "function" ? item.getAsFile() : null;
+              push(f);
+            } catch {
+              /* ignore */
+            }
           }
         }
       }
@@ -715,13 +744,25 @@
     return urls;
   }
 
+  function isValidKeepImageSrc(src) {
+    const s = (src || "").trim();
+    return s.startsWith("data:image/") || s.startsWith("blob:") || /^https?:\/\//i.test(s);
+  }
+
   async function insertImageDataUrl(ed, dataUrl, alt) {
-    if (!ed || !dataUrl || !dataUrl.startsWith("data:image/")) return false;
+    if (!ed || !dataUrl || !String(dataUrl).startsWith("data:image/")) return false;
     const safeAlt = escapeHtml(alt || "图片");
-    ed.focus();
-    ed.insertContent(
-      `<p style="margin:0.6em 0;"><img src="${dataUrl}" alt="${safeAlt}" data-warm-img="1" style="max-width:100%;width:auto;height:auto;display:inline-block;border-radius:8px;vertical-align:middle;" /></p>`
-    );
+    // 同步写 data-mce-src，避免 TinyMCE / scrub 误判
+    const html =
+      `<p style="margin:0.6em 0;"><img src="${dataUrl}" data-mce-src="${dataUrl}" alt="${safeAlt}" data-warm-img="1" ` +
+      `style="max-width:100%;width:auto;height:auto;display:inline-block;border-radius:8px;vertical-align:middle;" /></p>`;
+    try {
+      ed.focus();
+      ed.insertContent(html);
+    } catch (err) {
+      console.error("insertImageDataUrl", err);
+      return false;
+    }
     dirty = true;
     setStatus("未保存…");
     scheduleAutosave();
@@ -744,10 +785,15 @@
     ed._warmPasteBound = true;
     let pasteLock = false;
 
-    const onPaste = (e) => {
-      if (pasteLock) return;
-      const cd = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
-      if (!cd) return;
+    const handleImagePaste = (e) => {
+      if (pasteLock) return false;
+      const native = e && e.originalEvent ? e.originalEvent : e;
+      const cd =
+        (native && native.clipboardData) ||
+        (e && e.clipboardData) ||
+        (typeof window !== "undefined" && window.clipboardData) ||
+        null;
+      if (!cd) return false;
 
       const files = collectClipboardImages(cd);
       let html = "";
@@ -762,13 +808,17 @@
 
       if (!likelyImagePaste) {
         // 纯网页复制：不拦截，交给 TinyMCE；预处理会清裂图
-        return;
+        return false;
       }
 
       pasteLock = true;
-      e.preventDefault();
-      e.stopPropagation();
-      if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+      if (native && typeof native.preventDefault === "function") native.preventDefault();
+      if (e && typeof e.preventDefault === "function") e.preventDefault();
+      if (native && typeof native.stopPropagation === "function") native.stopPropagation();
+      if (e && typeof e.stopPropagation === "function") e.stopPropagation();
+      if (native && typeof native.stopImmediatePropagation === "function") {
+        native.stopImmediatePropagation();
+      }
 
       (async () => {
         toast("正在粘贴图片…");
@@ -783,7 +833,7 @@
               if (await insertImageDataUrl(ed, u, "粘贴图片")) ok += 1;
             }
           }
-          // 只清裂图占位，不动刚插入的 data: 图
+          // 只清裂图占位，不动刚插入的 data: 图（见 scrub 修复）
           scrubEditorJunk(ed, { aggressive: false });
           toast(ok ? `已粘贴 ${ok} 张图片` : "未识别到图片，请用工具栏「图片」或拖拽文件");
         } catch (err) {
@@ -792,10 +842,16 @@
         } finally {
           setTimeout(() => {
             pasteLock = false;
-          }, 400);
+          }, 500);
         }
       })();
+      return true;
     };
+
+    // TinyMCE 事件（与 iframe 原生 paste 二选一插入，靠 pasteLock）
+    ed.on("paste", (e) => {
+      handleImagePaste(e);
+    });
 
     ed.on("PastePreProcess", (e) => {
       if (e && typeof e.content === "string") {
@@ -810,6 +866,7 @@
           const src = img.getAttribute("src") || "";
           if (src.startsWith("data:image/")) {
             img.setAttribute("data-warm-img", "1");
+            img.setAttribute("data-mce-src", src);
             img.style.maxWidth = "100%";
             img.style.width = "auto";
             img.style.display = "inline-block";
@@ -822,14 +879,19 @@
       }
       setTimeout(() => scrubEditorJunk(ed, { aggressive: false }), 0);
     });
-    ed.on("init", () => {
+
+    const attachDomPaste = () => {
       bindBrokenImageGuard(ed);
-      // 只在 iframe document 捕获粘贴（TinyMCE 编辑区在 iframe 内）
       try {
         const doc = ed.getDoc();
         if (doc && !doc._warmPasteBound) {
           doc._warmPasteBound = true;
-          doc.addEventListener("paste", onPaste, true);
+          doc.addEventListener("paste", handleImagePaste, true);
+        }
+        const body = ed.getBody();
+        if (body && !body._warmPasteBound) {
+          body._warmPasteBound = true;
+          body.addEventListener("paste", handleImagePaste, true);
         }
       } catch {
         /* ignore */
@@ -838,7 +900,10 @@
         scrubEditorJunk(ed, { aggressive: false });
         repairEditorImages(ed);
       }, 50);
-    });
+    };
+
+    if (ed.initialized) attachDomPaste();
+    else ed.on("init", attachDomPaste);
   }
 
   function isBrokenImageSrc(src) {
@@ -924,12 +989,17 @@
     body.querySelectorAll("img").forEach((img) => {
       const src = (img.getAttribute("src") || "").trim();
       const mce = (img.getAttribute("data-mce-src") || "").trim();
-      if (
-        isBrokenImageSrc(src) ||
-        !src ||
-        isBrokenImageSrc(mce) ||
-        /^image\.(png|jpe?g|gif|webp)$/i.test((img.getAttribute("alt") || "").trim())
-      ) {
+      // 有效 data:/blob:/http(s) 一律保留（勿因空 data-mce-src 或 alt=image.png 误删）
+      if (isValidKeepImageSrc(src)) {
+        if (src.startsWith("data:image/") && !mce) {
+          img.setAttribute("data-mce-src", src);
+        }
+        if (src.startsWith("data:image/")) img.setAttribute("data-warm-img", "1");
+        return;
+      }
+      // 仅当 src 无效时，才参考 data-mce-src；空 mce 不算裂图依据
+      const mceBroken = mce ? isBrokenImageSrc(mce) : false;
+      if (!src || isBrokenImageSrc(src) || (mce && mceBroken && !isValidKeepImageSrc(mce))) {
         img.remove();
         n += 1;
       }
@@ -1041,7 +1111,13 @@
       img.style.height = "auto";
       img.style.display = "inline-block";
       const src = (img.getAttribute("src") || "").trim();
-      if (src.startsWith("data:image/")) continue;
+      if (src.startsWith("data:image/")) {
+        img.setAttribute("data-warm-img", "1");
+        const mce = (img.getAttribute("data-mce-src") || "").trim();
+        // TinyMCE 常把 data-mce-src 留成 image.png，同步成 data URL 以免别处误判
+        if (!mce || isBrokenImageSrc(mce)) img.setAttribute("data-mce-src", src);
+        continue;
+      }
 
       if (src.startsWith("blob:")) {
         try {
@@ -1365,14 +1441,7 @@
         images_upload_handler: (blobInfo) =>
           blobToDataUrl(blobInfo.blob())
             .then((dataUrl) => dataUrl)
-            .catch(() =>
-              new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result);
-                reader.onerror = reject;
-                reader.readAsDataURL(blobInfo.blob());
-              })
-            ),
+            .catch(() => readFileAsDataUrl(blobInfo.blob())),
         file_picker_types: "image",
         file_picker_callback: (callback, _value, meta) => {
           if (meta.filetype !== "image") return;
@@ -1382,10 +1451,13 @@
           input.onchange = async () => {
             const file = input.files && input.files[0];
             if (!file) return;
+            toast("正在插入图片…");
             try {
               const dataUrl = await blobToDataUrl(file);
-              callback(dataUrl, { title: file.name || "图片" });
-            } catch {
+              callback(dataUrl, { title: file.name || "图片", alt: "图片" });
+              toast("图片已插入");
+            } catch (err) {
+              console.error(err);
               toast("图片插入失败");
             }
           };
@@ -1452,17 +1524,21 @@
             scheduleAutosave();
           });
           ed.on("drop", (e) => {
-            const files = e.dataTransfer && e.dataTransfer.files;
-            if (!files || !files.length) return;
-            const imgs = collectClipboardImages(e.dataTransfer);
+            const dt = e.dataTransfer || (e.originalEvent && e.originalEvent.dataTransfer);
+            if (!dt) return;
+            const imgs = collectClipboardImages(dt);
             if (!imgs.length) return;
             e.preventDefault();
+            if (e.originalEvent && typeof e.originalEvent.preventDefault === "function") {
+              e.originalEvent.preventDefault();
+            }
             toast("正在插入图片…");
             (async () => {
               let ok = 0;
               for (const file of imgs) {
                 if (await insertImageFromBlob(ed, file, file.name || "拖入图片")) ok += 1;
               }
+              scrubEditorJunk(ed, { aggressive: false });
               toast(ok ? `已插入 ${ok} 张图片` : "图片插入失败");
             })();
           });
