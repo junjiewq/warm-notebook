@@ -639,6 +639,7 @@
   }
 
   async function blobToDataUrl(blob) {
+    if (!blob) throw new Error("empty blob");
     if (blob.size > IMG_WARN_BYTES) {
       toast("图片较大，正在压缩…");
     }
@@ -652,6 +653,86 @@
         reader.readAsDataURL(blob);
       });
     }
+  }
+
+  function collectClipboardImages(dataTransfer) {
+    const out = [];
+    const seen = new Set();
+    const push = (file) => {
+      if (!file) return;
+      const key = `${file.name}|${file.size}|${file.type}|${file.lastModified}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(file);
+    };
+    if (!dataTransfer) return out;
+    try {
+      if (dataTransfer.items && dataTransfer.items.length) {
+        [...dataTransfer.items].forEach((item) => {
+          if (item.kind === "file" && (!item.type || /^image\//.test(item.type))) {
+            push(item.getAsFile());
+          }
+        });
+      }
+      if (dataTransfer.files && dataTransfer.files.length) {
+        [...dataTransfer.files].forEach((f) => {
+          if (!f.type || /^image\//.test(f.type)) push(f);
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+    return out.filter((f) => f && f.size > 0);
+  }
+
+  async function insertImageFromBlob(ed, blob, alt) {
+    if (!ed || !blob) return false;
+    try {
+      const dataUrl = await blobToDataUrl(blob);
+      const safeAlt = escapeHtml(alt || "图片");
+      ed.focus();
+      ed.insertContent(
+        `<p><img src="${dataUrl}" alt="${safeAlt}" style="max-width:100%;height:auto;display:block;margin:0.5em 0;" /></p>`
+      );
+      dirty = true;
+      setStatus("未保存…");
+      scheduleAutosave();
+      return true;
+    } catch (err) {
+      console.error(err);
+      return false;
+    }
+  }
+
+  function bindEditorImagePaste(ed) {
+    const onPaste = (e) => {
+      const cd = e.clipboardData || (e.originalEvent && e.originalEvent.clipboardData);
+      const imgs = collectClipboardImages(cd);
+      if (!imgs.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof e.stopImmediatePropagation === "function") e.stopImmediatePropagation();
+      toast("正在粘贴图片…");
+      (async () => {
+        let ok = 0;
+        for (const file of imgs) {
+          if (await insertImageFromBlob(ed, file, file.name || "粘贴图片")) ok += 1;
+        }
+        toast(ok ? `已粘贴 ${ok} 张图片` : "图片粘贴失败");
+      })();
+    };
+
+    ed.on("paste", onPaste);
+    ed.on("init", () => {
+      try {
+        const doc = ed.getDoc();
+        if (doc) doc.addEventListener("paste", onPaste, true);
+        const win = ed.getWin();
+        if (win) win.addEventListener("paste", onPaste, true);
+      } catch {
+        /* ignore */
+      }
+    });
   }
 
   /* —— Format painter —— */
@@ -890,6 +971,7 @@
         toolbar_sticky: true,
         contextmenu: "link image table",
         paste_data_images: true,
+        paste_block_drop: false,
         automatic_uploads: true,
         images_reuse_filename: true,
         image_title: true,
@@ -902,7 +984,7 @@
         skin: "oxide",
         skin_url: TINYMCE_BASE + "/skins/ui/oxide",
         content_css_cors: true,
-        placeholder: "写点什么吧… 支持颜色、高亮、表格与图片",
+        placeholder: "写点什么吧… 可直接粘贴截图/图片，支持颜色、表格",
         font_size_formats: "12px 14px 16px 18px 20px 24px 28px",
         block_formats: "段落=p; 标题 1=h1; 标题 2=h2; 标题 3=h3; 引用=blockquote",
         link_default_target: "_blank",
@@ -911,7 +993,16 @@
           toolbar_mode: "sliding",
         },
         images_upload_handler: (blobInfo) =>
-          blobToDataUrl(blobInfo.blob()).then((dataUrl) => dataUrl),
+          blobToDataUrl(blobInfo.blob())
+            .then((dataUrl) => dataUrl)
+            .catch(() =>
+              new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = reject;
+                reader.readAsDataURL(blobInfo.blob());
+              })
+            ),
         file_picker_types: "image",
         file_picker_callback: (callback, _value, meta) => {
           if (meta.filetype !== "image") return;
@@ -932,6 +1023,7 @@
         },
         setup: (ed) => {
           registerFormatPainter(ed);
+          bindEditorImagePaste(ed);
           ed.on("init", () => {
             editor = ed;
             resolve(ed);
@@ -945,17 +1037,17 @@
           ed.on("drop", (e) => {
             const files = e.dataTransfer && e.dataTransfer.files;
             if (!files || !files.length) return;
-            const imgs = [...files].filter((f) => /^image\//.test(f.type));
+            const imgs = collectClipboardImages(e.dataTransfer);
             if (!imgs.length) return;
             e.preventDefault();
-            imgs.forEach(async (file) => {
-              try {
-                const dataUrl = await blobToDataUrl(file);
-                ed.insertContent('<img src="' + dataUrl + '" alt="" />');
-              } catch {
-                toast("图片插入失败");
+            toast("正在插入图片…");
+            (async () => {
+              let ok = 0;
+              for (const file of imgs) {
+                if (await insertImageFromBlob(ed, file, file.name || "拖入图片")) ok += 1;
               }
-            });
+              toast(ok ? `已插入 ${ok} 张图片` : "图片插入失败");
+            })();
           });
         },
       });
